@@ -207,6 +207,45 @@ test("prints snapshots and compares snapshot files", async () => {
   }
 });
 
+test("explains package JSON", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-explain-"));
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        dependencies: {
+          expo: "54.0.0",
+          "react-native": "0.81.0",
+          "react-native-pager-view": "6.9.1"
+        }
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await mkdir(path.join(root, "ios"));
+  await mkdir(path.join(root, "android"));
+
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const output = await captureStdout(() => main(["explain", "react-native-pager-view", "--json"]));
+    assert.equal(output.exitCode, 1);
+    const parsed = JSON.parse(output.stdout) as {
+      packageName: string;
+      status: string;
+      matchingRules: Array<{ id: string }>;
+    };
+    assert.equal(parsed.packageName, "react-native-pager-view");
+    assert.equal(parsed.status, "risky");
+    assert.equal(parsed.matchingRules[0]?.id, "expo-sdk-54-react-native-pager-view-scroll-lock");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";

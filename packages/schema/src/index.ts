@@ -305,6 +305,25 @@ export interface SnapshotComparison {
   newDuplicateReactNative: DuplicateDependency[];
 }
 
+export interface PackageExplanation {
+  packageName: string;
+  queryVersion?: string;
+  project: ProjectProfile;
+  nodes: DependencyGraphNode[];
+  declaredRange?: string;
+  installedVersions: string[];
+  direct: boolean;
+  classification: NativePackageClassification | "not-installed";
+  status: StabilityStatus | "unknown";
+  findings: Finding[];
+  matchingRules: CompatibilityRule[];
+  activeExceptions: LocalException[];
+  staleExceptions: LocalException[];
+  recommendedActions: RemediationAction[];
+  evidence: EvidenceRecord[];
+  unknownReason?: string;
+}
+
 export interface NativeGuardFindingV1 {
   id: string;
   packageName?: string;

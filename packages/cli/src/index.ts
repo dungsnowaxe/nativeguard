@@ -4,6 +4,7 @@ import {
   compareNativeGuardSnapshots,
   createEnvironmentReport,
   createNativeGuardSnapshot,
+  explainPackage,
   NativeGuardError,
   readNativeGuardSnapshot,
   writeNativeGuardLockfile,
@@ -23,6 +24,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   if (command === "doctor") {
     return runDoctor(args);
+  }
+
+  if (command === "explain") {
+    return runExplain(args);
   }
 
   if (command === "env-report") {
@@ -45,6 +50,37 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   console.error(`Unknown command: ${command}`);
   printHelp();
   return 1;
+}
+
+async function runExplain(args: string[]): Promise<number> {
+  const json = args.includes("--json");
+  const configPath = readFlagValue(args, "--config");
+  const packageName = args.find(arg => !arg.startsWith("--") && arg !== configPath);
+
+  if (!packageName) {
+    printCommandError(new NativeGuardError("explain requires <package[@version]>.", "INVALID_ARGUMENTS"), json);
+    return 1;
+  }
+
+  try {
+    const explanation = await explainPackage({
+      rootDir: process.cwd(),
+      cliVersion: CLI_VERSION,
+      packageName,
+      ...(configPath ? { configPath } : {})
+    });
+
+    if (json) {
+      process.stdout.write(`${JSON.stringify(explanation, null, 2)}\n`);
+    } else {
+      printPackageExplanation(explanation);
+    }
+
+    return explanation.status === "risky" || explanation.status === "unknown" ? 1 : 0;
+  } catch (error) {
+    printCommandError(error, json);
+    return 1;
+  }
 }
 
 async function runSnapshot(args: string[]): Promise<number> {
@@ -214,6 +250,7 @@ function printHelp(): void {
 Usage:
   nativeguard --version
   nativeguard doctor [--json] [--write-lockfile] [--ci] [--config <path>]
+  nativeguard explain <package[@version]> [--json] [--config <path>]
   nativeguard env-report [--json]
   nativeguard snapshot [--json] [--output <path>] [--config <path>]
   nativeguard compare --base <path> --head <path> [--json]
@@ -275,6 +312,39 @@ function printSnapshotComparison(comparison: ReturnType<typeof compareNativeGuar
   console.log(`Version changes: ${comparison.changedPackageVersions.length}`);
   for (const change of comparison.changedPackages) {
     console.log(`- ${change.changeType} ${change.packageName}: ${change.beforeVersion ?? "-"} -> ${change.afterVersion ?? "-"}`);
+  }
+}
+
+function printPackageExplanation(explanation: Awaited<ReturnType<typeof explainPackage>>): void {
+  console.log(`NativeGuard Package Explanation: ${explanation.packageName}`);
+  console.log("");
+  console.log(`Status: ${explanation.status.toUpperCase()}`);
+  console.log(`Installed versions: ${explanation.installedVersions.length > 0 ? explanation.installedVersions.join(", ") : "not installed"}`);
+  console.log(`Declared range: ${explanation.declaredRange ?? "not declared"}`);
+  console.log(`Direct dependency: ${explanation.direct ? "yes" : "no"}`);
+  console.log(`Classification: ${explanation.classification}`);
+  if (explanation.unknownReason) {
+    console.log(`Unknown: ${explanation.unknownReason}`);
+  }
+
+  console.log("");
+  console.log("Findings:");
+  if (explanation.findings.length === 0) {
+    console.log("- none");
+  } else {
+    for (const finding of explanation.findings) {
+      console.log(`- [${finding.severity}] ${finding.title}`);
+    }
+  }
+
+  console.log("");
+  console.log("Actions:");
+  if (explanation.recommendedActions.length === 0) {
+    console.log("- none");
+  } else {
+    for (const action of explanation.recommendedActions) {
+      console.log(`- ${action.type}: ${action.note}`);
+    }
   }
 }
 

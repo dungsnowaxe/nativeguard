@@ -13,6 +13,7 @@ import {
   createNativeGuardSnapshot,
   detectPackageManager,
   detectProjectProfile,
+  explainPackage,
   loadNativeGuardConfig,
   readNativeGuardSnapshot,
   readNativeGuardLockfile,
@@ -474,6 +475,99 @@ test("reports stale exceptions and applies CI policy", async () => {
   assert.equal(report.policy?.exitDecision.exitCode, 1);
   assert.match(report.policy?.exitDecision.reason ?? "", /stale-exception/);
   assert.ok(report.findings.some(finding => finding.id === "finding-stale-exception-react-native-pager-view"));
+});
+
+test("explains risky packages with graph, rules, findings, and actions", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-pager-view": "6.9.1"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm"
+  });
+
+  const explanation = await explainPackage({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    packageName: "react-native-pager-view",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  assert.equal(explanation.packageName, "react-native-pager-view");
+  assert.equal(explanation.status, "risky");
+  assert.equal(explanation.declaredRange, "6.9.1");
+  assert.equal(explanation.direct, true);
+  assert.deepEqual(explanation.installedVersions, ["6.9.1"]);
+  assert.equal(explanation.matchingRules[0]?.id, "expo-sdk-54-react-native-pager-view-scroll-lock");
+  assert.ok(explanation.findings.some(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock"));
+  assert.ok(explanation.recommendedActions.some(action => action.type === "bump"));
+});
+
+test("explains active package exceptions", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-pager-view": "6.9.1"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm",
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules" },
+          ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+          exceptions: [
+            {
+              packageName: "react-native-pager-view",
+              allowedVersions: "6.9.1",
+              reason: "Temporary exception.",
+              owner: "@mobile-platform",
+              expiresAt: "2026-08-01",
+              requiredVerification: ["android-release-build"]
+            }
+          ],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const explanation = await explainPackage({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    packageName: "react-native-pager-view",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  assert.equal(explanation.status, "accepted-exception");
+  assert.equal(explanation.activeExceptions.length, 1);
+});
+
+test("explains unknown packages", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0"
+    },
+    lockfile: "npm"
+  });
+
+  const explanation = await explainPackage({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    packageName: "react-native-not-installed",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  assert.equal(explanation.status, "unknown");
+  assert.equal(explanation.classification, "not-installed");
+  assert.match(explanation.unknownReason ?? "", /not found/);
 });
 
 test("creates, writes, reads, and compares snapshots", async () => {

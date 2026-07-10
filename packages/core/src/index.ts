@@ -19,6 +19,7 @@ import {
   type NativeGuardLockfile,
   type NativeGuardSnapshot,
   type PackageIssue,
+  type PackageExplanation,
   type PackageManagerName,
   type PolicyStatus,
   type ProjectKind,
@@ -46,6 +47,10 @@ export interface AnalyzeOptions {
   configPath?: string;
   ci?: boolean;
   now?: Date;
+}
+
+export interface ExplainPackageOptions extends AnalyzeOptions {
+  packageName: string;
 }
 
 interface PackageJson {
@@ -102,6 +107,51 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     packageIssues,
     findings: allFindings,
     nextActions: createNextActions(summary.status, profile.packageManager)
+  };
+}
+
+export async function explainPackage(options: ExplainPackageOptions): Promise<PackageExplanation> {
+  const report = await analyzeProject(options);
+  const { packageName, queryVersion } = parsePackageQuery(options.packageName);
+  const nodes = report.dependencyGraph?.nodes.filter(node => node.packageName === packageName) ?? [];
+  const allDependencies = {
+    ...report.dependencySnapshot.dependencies,
+    ...report.dependencySnapshot.devDependencies
+  };
+  const findings = report.findings.filter(finding => finding.packageName === packageName);
+  const matchingRules = loadBundledRules().filter(rule => {
+    if (rule.packageName !== packageName) return false;
+    if (!ruleMatchesProfile(rule, report.project)) return false;
+    const version = queryVersion ?? allDependencies[packageName] ?? nodes[0]?.installedVersion;
+    return version ? versionMatchesRange(version, rule.affectedRange) : rule.affectedRange === "*";
+  });
+  const activeExceptions = report.policy?.activeExceptions.filter(exception => exception.packageName === packageName) ?? [];
+  const staleExceptions = report.policy?.staleExceptions.filter(exception => exception.packageName === packageName) ?? [];
+  const installedVersions = Array.from(new Set(nodes.map(node => node.installedVersion))).sort();
+  const direct = nodes.some(node => node.direct) || packageName in allDependencies;
+  const recommendedActions = findings.flatMap(finding => finding.remediation);
+  const evidence = findings.flatMap(finding => finding.evidence);
+  const status = determinePackageExplanationStatus(findings, activeExceptions, staleExceptions, nodes.length > 0 || packageName in allDependencies);
+
+  return {
+    packageName,
+    ...(queryVersion ? { queryVersion } : {}),
+    project: report.project,
+    nodes,
+    ...(allDependencies[packageName] ? { declaredRange: allDependencies[packageName] } : {}),
+    installedVersions,
+    direct,
+    classification: nodes[0]?.classification ?? (packageName in allDependencies ? "unknown" : "not-installed"),
+    status,
+    findings,
+    matchingRules,
+    activeExceptions,
+    staleExceptions,
+    recommendedActions,
+    evidence,
+    ...(nodes.length === 0 && !(packageName in allDependencies)
+      ? { unknownReason: `${packageName} was not found in package.json or the dependency graph.` }
+      : {})
   };
 }
 
@@ -640,6 +690,43 @@ function findingToPolicyStatus(finding: Finding): PolicyStatus {
 function isExceptionExpired(exception: LocalException, now: Date): boolean {
   const expiresAt = Date.parse(exception.expiresAt);
   return Number.isNaN(expiresAt) || expiresAt < now.getTime();
+}
+
+function determinePackageExplanationStatus(
+  findings: Finding[],
+  activeExceptions: LocalException[],
+  staleExceptions: LocalException[],
+  installed: boolean
+): PackageExplanation["status"] {
+  if (!installed) return "unknown";
+  if (staleExceptions.length > 0) return "accepted-exception";
+  if (findings.some(finding => finding.status === "risky" || finding.severity === "error")) return "risky";
+  if (activeExceptions.length > 0 || findings.some(finding => finding.status === "accepted-exception")) return "accepted-exception";
+  if (findings.some(finding => finding.status === "unsupported")) return "unsupported";
+  return "stable";
+}
+
+function parsePackageQuery(query: string): { packageName: string; queryVersion?: string } {
+  if (query.startsWith("@")) {
+    const segments = query.split("@");
+    if (segments.length >= 3) {
+      return {
+        packageName: `@${segments[1]}`,
+        ...(segments[2] ? { queryVersion: segments.slice(2).join("@") } : {})
+      };
+    }
+    return { packageName: query };
+  }
+
+  const versionSeparator = query.lastIndexOf("@");
+  if (versionSeparator > 0) {
+    return {
+      packageName: query.slice(0, versionSeparator),
+      queryVersion: query.slice(versionSeparator + 1)
+    };
+  }
+
+  return { packageName: query };
 }
 
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {
@@ -1478,6 +1565,7 @@ export type {
   NativeGuardEnvironmentReport,
   NativeGuardLockfile,
   NativeGuardSnapshot,
+  PackageExplanation,
   PackageManagerName,
   ProjectKind,
   ProjectProfile,

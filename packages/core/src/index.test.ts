@@ -7,12 +7,16 @@ import path from "node:path";
 import {
   analyzeProject,
   collectToolchainContext,
+  compareNativeGuardSnapshots,
   createDependencyGraph,
   createEnvironmentReport,
+  createNativeGuardSnapshot,
   detectPackageManager,
   detectProjectProfile,
   loadNativeGuardConfig,
+  readNativeGuardSnapshot,
   readNativeGuardLockfile,
+  writeNativeGuardSnapshot,
   writeNativeGuardLockfile
 } from "./index.js";
 
@@ -470,6 +474,66 @@ test("reports stale exceptions and applies CI policy", async () => {
   assert.equal(report.policy?.exitDecision.exitCode, 1);
   assert.match(report.policy?.exitDecision.reason ?? "", /stale-exception/);
   assert.ok(report.findings.some(finding => finding.id === "finding-stale-exception-react-native-pager-view"));
+});
+
+test("creates, writes, reads, and compares snapshots", async () => {
+  const baseRoot = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-svg": "15.10.0"
+    },
+    lockfile: "npm"
+  });
+  const headRoot = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-svg": "15.11.2",
+      "react-native-mmkv": "3.0.0"
+    },
+    lockfile: "npm"
+  });
+
+  const base = await createNativeGuardSnapshot({
+    rootDir: baseRoot,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+  const head = await createNativeGuardSnapshot({
+    rootDir: headRoot,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-12T00:00:00.000Z")
+  });
+  const outputPath = path.join(headRoot, "nativeguard-snapshot.json");
+  await writeNativeGuardSnapshot(head, outputPath);
+  const readBack = await readNativeGuardSnapshot(outputPath);
+  const comparison = compareNativeGuardSnapshots(base, readBack);
+
+  assert.equal(readBack.schemaVersion, "1.0.0");
+  assert.notEqual(base.dependencyGraphFingerprint, readBack.dependencyGraphFingerprint);
+  assert.deepEqual(
+    comparison.changedPackages.map(change => ({
+      packageName: change.packageName,
+      changeType: change.changeType,
+      beforeVersion: change.beforeVersion,
+      afterVersion: change.afterVersion
+    })),
+    [
+      {
+        packageName: "react-native-mmkv",
+        changeType: "added",
+        beforeVersion: undefined,
+        afterVersion: "3.0.0"
+      },
+      {
+        packageName: "react-native-svg",
+        changeType: "changed",
+        beforeVersion: "15.10.0",
+        afterVersion: "15.11.2"
+      }
+    ]
+  );
 });
 
 test("analyzes project and writes lockfile", async () => {

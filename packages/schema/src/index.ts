@@ -286,6 +286,25 @@ export interface NativeGuardSnapshot {
   };
 }
 
+export interface DependencyGraphChange {
+  packageName: string;
+  changeType: "added" | "removed" | "changed";
+  beforeVersion?: string;
+  afterVersion?: string;
+  direct: boolean;
+}
+
+export interface SnapshotComparison {
+  baseGeneratedAt: string;
+  headGeneratedAt: string;
+  changedPackages: DependencyGraphChange[];
+  addedPackages: DependencyGraphChange[];
+  removedPackages: DependencyGraphChange[];
+  changedPackageVersions: DependencyGraphChange[];
+  newDuplicateReact: DuplicateDependency[];
+  newDuplicateReactNative: DuplicateDependency[];
+}
+
 export interface NativeGuardFindingV1 {
   id: string;
   packageName?: string;

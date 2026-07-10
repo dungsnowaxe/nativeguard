@@ -1,10 +1,12 @@
 import { access, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
   CONFIG_SCHEMA_VERSION,
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
+  SNAPSHOT_SCHEMA_VERSION,
   type CompatibilityRule,
   type DependencyGraph,
   type DependencyGraphNode,
@@ -15,14 +17,17 @@ import {
   type NativeGuardEnvironmentReport,
   type NativeGuardConfig,
   type NativeGuardLockfile,
+  type NativeGuardSnapshot,
   type PackageIssue,
   type PackageManagerName,
   type PolicyStatus,
   type ProjectKind,
   type ProjectProfile,
+  type SnapshotComparison,
   type StabilityStatus,
   type ToolchainContext,
   validateLockfile,
+  validateNativeGuardSnapshot,
   validateNativeGuardConfig
 } from "@nativeguard/schema";
 
@@ -118,6 +123,121 @@ export async function createEnvironmentReport(options: AnalyzeOptions): Promise<
       applied: true,
       hiddenFields: ["project.root", "project.workspace.root"]
     }
+  };
+}
+
+export async function createNativeGuardSnapshot(options: AnalyzeOptions): Promise<NativeGuardSnapshot> {
+  const root = path.resolve(options.rootDir);
+  const packageJson = await readPackageJson(root);
+  const config = await loadNativeGuardConfig(root, options.configPath);
+  const project = await detectProjectProfile(root, packageJson);
+  const toolchain = await collectToolchainContext(root, project.packageManager, packageJson);
+  const dependencyGraph = await createDependencyGraph(root, packageJson, project.packageManager);
+
+  return {
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    generatedAt: (options.now ?? new Date()).toISOString(),
+    nativeguard: {
+      cliVersion: options.cliVersion,
+      rulesPackage: RULES_PACKAGE
+    },
+    project,
+    toolchain,
+    dependencyGraphFingerprint: fingerprint(dependencyGraph.nodes),
+    projectContextFingerprint: fingerprint(project),
+    rulePackVersion: RULES_PACKAGE.version,
+    dependencyNodes: dependencyGraph.nodes,
+    exceptions: config.exceptions,
+    redaction: {
+      applied: false,
+      hiddenFields: []
+    }
+  };
+}
+
+export async function writeNativeGuardSnapshot(
+  snapshot: NativeGuardSnapshot,
+  outputPath: string
+): Promise<string> {
+  await writeFile(outputPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  return outputPath;
+}
+
+export async function readNativeGuardSnapshot(snapshotPath: string): Promise<NativeGuardSnapshot> {
+  const raw = await readFile(snapshotPath, "utf8");
+  const parsed = JSON.parse(raw) as unknown;
+  const result = validateNativeGuardSnapshot(parsed);
+  if (!result.valid) {
+    throw new NativeGuardError(
+      `NativeGuard snapshot is invalid: ${result.errors.join(", ")}`,
+      "INVALID_SNAPSHOT"
+    );
+  }
+  return parsed as NativeGuardSnapshot;
+}
+
+export function compareNativeGuardSnapshots(
+  base: NativeGuardSnapshot,
+  head: NativeGuardSnapshot
+): SnapshotComparison {
+  const baseNodes = indexSnapshotNodes(base);
+  const headNodes = indexSnapshotNodes(head);
+  const changedPackages = new Map<string, SnapshotComparison["changedPackages"][number]>();
+
+  for (const [key, baseNode] of baseNodes) {
+    const headNode = headNodes.get(key);
+    if (!headNode) {
+      changedPackages.set(key, {
+        packageName: baseNode.packageName,
+        changeType: "removed",
+        beforeVersion: baseNode.installedVersion,
+        direct: baseNode.direct
+      });
+    }
+  }
+
+  for (const [key, headNode] of headNodes) {
+    const baseNode = baseNodes.get(key);
+    if (!baseNode) {
+      changedPackages.set(key, {
+        packageName: headNode.packageName,
+        changeType: "added",
+        afterVersion: headNode.installedVersion,
+        direct: headNode.direct
+      });
+      continue;
+    }
+    if (baseNode.installedVersion !== headNode.installedVersion) {
+      changedPackages.set(key, {
+        packageName: headNode.packageName,
+        changeType: "changed",
+        beforeVersion: baseNode.installedVersion,
+        afterVersion: headNode.installedVersion,
+        direct: baseNode.direct || headNode.direct
+      });
+    }
+  }
+
+  const changes = Array.from(changedPackages.values()).sort((left, right) => {
+    if (left.packageName === right.packageName) return left.changeType.localeCompare(right.changeType);
+    return left.packageName.localeCompare(right.packageName);
+  });
+  const baseDuplicateReact = duplicateSet(base.dependencyNodes, "react");
+  const baseDuplicateReactNative = duplicateSet(base.dependencyNodes, "react-native");
+  const headDuplicateReact = duplicatesForPackage(head.dependencyNodes, "react")
+    .filter(duplicate => !baseDuplicateReact.has(duplicate.versions.join("|")));
+  const headDuplicateReactNative = duplicatesForPackage(head.dependencyNodes, "react-native")
+    .filter(duplicate => !baseDuplicateReactNative.has(duplicate.versions.join("|")));
+
+  return {
+    baseGeneratedAt: base.generatedAt,
+    headGeneratedAt: head.generatedAt,
+    changedPackages: changes,
+    addedPackages: changes.filter(change => change.changeType === "added"),
+    removedPackages: changes.filter(change => change.changeType === "removed"),
+    changedPackageVersions: changes.filter(change => change.changeType === "changed"),
+    newDuplicateReact: headDuplicateReact,
+    newDuplicateReactNative: headDuplicateReactNative
   };
 }
 
@@ -1037,6 +1157,45 @@ function findDuplicateDependencies(nodes: DependencyGraphNode[]): Array<{ packag
     .sort((left, right) => left.packageName.localeCompare(right.packageName));
 }
 
+function indexSnapshotNodes(snapshot: NativeGuardSnapshot): Map<string, DependencyGraphNode> {
+  const nodes = new Map<string, DependencyGraphNode>();
+  for (const node of snapshot.dependencyNodes) {
+    nodes.set(`${node.packageName}\0${node.dependencyPath.join(">")}`, node);
+  }
+  return nodes;
+}
+
+function duplicatesForPackage(
+  nodes: DependencyGraphNode[],
+  packageName: string
+): Array<{ packageName: string; versions: string[] }> {
+  return findDuplicateDependencies(nodes).filter(duplicate => duplicate.packageName === packageName);
+}
+
+function duplicateSet(nodes: DependencyGraphNode[], packageName: string): Set<string> {
+  return new Set(duplicatesForPackage(nodes, packageName).map(duplicate => duplicate.versions.join("|")));
+}
+
+function fingerprint(value: unknown): string {
+  return createHash("sha256")
+    .update(stableStringify(value))
+    .digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(item => stableStringify(item)).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function readJsonFile<T>(filePath: string): Promise<T | undefined> {
   const raw = await readTextIfExists(filePath);
   if (!raw) return undefined;
@@ -1318,8 +1477,10 @@ export type {
   Finding,
   NativeGuardEnvironmentReport,
   NativeGuardLockfile,
+  NativeGuardSnapshot,
   PackageManagerName,
   ProjectKind,
   ProjectProfile,
+  SnapshotComparison,
   ToolchainContext
 };

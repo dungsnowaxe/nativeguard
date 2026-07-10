@@ -1,5 +1,14 @@
 #!/usr/bin/env node
-import { analyzeProject, createEnvironmentReport, NativeGuardError, writeNativeGuardLockfile } from "@nativeguard/core";
+import {
+  analyzeProject,
+  compareNativeGuardSnapshots,
+  createEnvironmentReport,
+  createNativeGuardSnapshot,
+  NativeGuardError,
+  readNativeGuardSnapshot,
+  writeNativeGuardLockfile,
+  writeNativeGuardSnapshot
+} from "@nativeguard/core";
 import { validateDoctorReport, validateNativeGuardEnvironmentReport } from "@nativeguard/schema";
 
 const CLI_VERSION = "0.0.0";
@@ -20,6 +29,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return runEnvReport(args);
   }
 
+  if (command === "snapshot") {
+    return runSnapshot(args);
+  }
+
+  if (command === "compare") {
+    return runCompare(args);
+  }
+
   if (command === "--help" || command === "-h" || command === undefined) {
     printHelp();
     return 0;
@@ -28,6 +45,64 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   console.error(`Unknown command: ${command}`);
   printHelp();
   return 1;
+}
+
+async function runSnapshot(args: string[]): Promise<number> {
+  const json = args.includes("--json");
+  const outputPath = readFlagValue(args, "--output");
+  const configPath = readFlagValue(args, "--config");
+
+  try {
+    const snapshot = await createNativeGuardSnapshot({
+      rootDir: process.cwd(),
+      cliVersion: CLI_VERSION,
+      ...(configPath ? { configPath } : {})
+    });
+
+    if (outputPath) {
+      await writeNativeGuardSnapshot(snapshot, outputPath);
+    }
+
+    if (json || !outputPath) {
+      process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
+    } else {
+      console.log(`Wrote NativeGuard snapshot to ${outputPath}`);
+    }
+
+    return 0;
+  } catch (error) {
+    printCommandError(error, json);
+    return 1;
+  }
+}
+
+async function runCompare(args: string[]): Promise<number> {
+  const json = args.includes("--json");
+  const basePath = readFlagValue(args, "--base");
+  const headPath = readFlagValue(args, "--head");
+
+  if (!basePath || !headPath) {
+    printCommandError(new NativeGuardError("compare requires --base <path> and --head <path>.", "INVALID_ARGUMENTS"), json);
+    return 1;
+  }
+
+  try {
+    const comparison = compareNativeGuardSnapshots(
+      await readNativeGuardSnapshot(basePath),
+      await readNativeGuardSnapshot(headPath)
+    );
+
+    if (json) {
+      process.stdout.write(`${JSON.stringify(comparison, null, 2)}\n`);
+    } else {
+      printSnapshotComparison(comparison);
+    }
+
+    return comparison.changedPackages.length > 0 ? 1 : 0;
+  } catch (error) {
+    printCommandError(error, json);
+    return 1;
+  }
 }
 
 async function runEnvReport(args: string[]): Promise<number> {
@@ -140,6 +215,8 @@ Usage:
   nativeguard --version
   nativeguard doctor [--json] [--write-lockfile] [--ci] [--config <path>]
   nativeguard env-report [--json]
+  nativeguard snapshot [--json] [--output <path>] [--config <path>]
+  nativeguard compare --base <path> --head <path> [--json]
 `);
 }
 
@@ -187,6 +264,39 @@ function readFlagValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
   if (index === -1) return undefined;
   return args[index + 1];
+}
+
+function printSnapshotComparison(comparison: ReturnType<typeof compareNativeGuardSnapshots>): void {
+  console.log("NativeGuard Snapshot Comparison");
+  console.log("");
+  console.log(`Changed packages: ${comparison.changedPackages.length}`);
+  console.log(`Added: ${comparison.addedPackages.length}`);
+  console.log(`Removed: ${comparison.removedPackages.length}`);
+  console.log(`Version changes: ${comparison.changedPackageVersions.length}`);
+  for (const change of comparison.changedPackages) {
+    console.log(`- ${change.changeType} ${change.packageName}: ${change.beforeVersion ?? "-"} -> ${change.afterVersion ?? "-"}`);
+  }
+}
+
+function printCommandError(error: unknown, json: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          error: {
+            code: error instanceof NativeGuardError ? error.code : "UNKNOWN_ERROR",
+            message
+          }
+        },
+        null,
+        2
+      )}\n`
+    );
+  } else {
+    console.error(`NativeGuard: ${message}`);
+  }
 }
 
 function printEnvironmentReport(report: Awaited<ReturnType<typeof createEnvironmentReport>>): void {

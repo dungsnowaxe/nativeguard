@@ -167,6 +167,46 @@ test("uses CI policy exit code from config", async () => {
   }
 });
 
+test("prints snapshots and compares snapshot files", async () => {
+  const baseRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-base-snapshot-"));
+  const headRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-head-snapshot-"));
+  await writeFile(
+    path.join(baseRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0" } }, null, 2)
+  );
+  await writeFile(path.join(baseRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await writeFile(
+    path.join(headRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0", "react-native-svg": "15.11.2" } }, null, 2)
+  );
+  await writeFile(path.join(headRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+
+  const baseSnapshotPath = path.join(baseRoot, "snapshot.json");
+  const headSnapshotPath = path.join(headRoot, "snapshot.json");
+  const previous = process.cwd();
+
+  try {
+    process.chdir(baseRoot);
+    const baseOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(baseOutput.exitCode, 0);
+    await writeFile(baseSnapshotPath, baseOutput.stdout);
+
+    process.chdir(headRoot);
+    const headOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(headOutput.exitCode, 0);
+    await writeFile(headSnapshotPath, headOutput.stdout);
+
+    const compareOutput = await captureStdout(() => main(["compare", "--json", "--base", baseSnapshotPath, "--head", headSnapshotPath]));
+    assert.equal(compareOutput.exitCode, 1);
+    const parsed = JSON.parse(compareOutput.stdout) as {
+      addedPackages: Array<{ packageName: string }>;
+    };
+    assert.deepEqual(parsed.addedPackages.map(change => change.packageName), ["react-native-svg"]);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";

@@ -33,6 +33,12 @@ importers:
         specifier: workspace:*
         version: link:../schema
 
+  packages/github-action:
+    dependencies:
+      '@nativeguard/schema':
+        specifier: workspace:*
+        version: link:../schema
+
   packages/rules:
     dependencies:
       '@nativeguard/schema':

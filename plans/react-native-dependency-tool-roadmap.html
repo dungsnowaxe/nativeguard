@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Expo / React Native Dependency Intelligence Tool — Product Plan & Roadmap</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #11182c;
+      --panel-2: #172036;
+      --text: #e8eefc;
+      --muted: #a9b4cc;
+      --line: rgba(255,255,255,0.12);
+      --blue: #7dd3fc;
+      --green: #86efac;
+      --yellow: #fde68a;
+      --red: #fca5a5;
+      --purple: #c4b5fd;
+      --pink: #f9a8d4;
+      --shadow: 0 24px 80px rgba(0,0,0,.35);
+      --radius: 22px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(125, 211, 252, .16), transparent 30%),
+        radial-gradient(circle at top right, rgba(196, 181, 253, .16), transparent 28%),
+        linear-gradient(180deg, #0b1020 0%, #090d18 100%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a { color: var(--blue); }
+
+    .page {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 56px 0 80px;
+    }
+
+    .hero {
+      padding: 56px;
+      border: 1px solid var(--line);
+      background: linear-gradient(135deg, rgba(17,24,44,.92), rgba(23,32,54,.78));
+      border-radius: 32px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -140px -180px auto;
+      width: 420px;
+      height: 420px;
+      background: radial-gradient(circle, rgba(125,211,252,.25), transparent 65%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--blue);
+      font-size: 13px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 18px var(--blue);
+    }
+
+    h1, h2, h3 { line-height: 1.15; margin: 0; }
+    h1 { font-size: clamp(38px, 6vw, 78px); letter-spacing: -0.055em; max-width: 950px; }
+    h2 { font-size: clamp(28px, 4vw, 44px); letter-spacing: -0.035em; margin-bottom: 20px; }
+    h3 { font-size: 21px; letter-spacing: -0.02em; margin-bottom: 10px; }
+    p { margin: 0 0 16px; color: var(--muted); }
+
+    .hero p {
+      max-width: 850px;
+      font-size: 19px;
+      margin-top: 24px;
+    }
+
+    .badges {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 30px;
+    }
+
+    .badge {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.05);
+      padding: 9px 13px;
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    section { margin-top: 34px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: rgba(17,24,44,.78);
+      border-radius: var(--radius);
+      padding: 26px;
+      box-shadow: 0 14px 50px rgba(0,0,0,.18);
+    }
+
+    .span-4 { grid-column: span 4; }
+    .span-5 { grid-column: span 5; }
+    .span-6 { grid-column: span 6; }
+    .span-7 { grid-column: span 7; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: rgba(125,211,252,.08);
+      padding: 18px 20px;
+      border-radius: 16px;
+      color: var(--text);
+      margin: 18px 0 0;
+    }
+
+    .callout strong { color: var(--blue); }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .yes, .no {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+    }
+
+    .yes { background: rgba(134,239,172,.08); }
+    .no { background: rgba(252,165,165,.08); }
+    .yes h3 { color: var(--green); }
+    .no h3 { color: var(--red); }
+
+    ul, ol { padding-left: 20px; margin: 10px 0 0; color: var(--muted); }
+    li { margin: 8px 0; }
+    li strong { color: var(--text); }
+
+    .name-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .name-card {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.045);
+      padding: 18px;
+      border-radius: 18px;
+    }
+
+    .name-card .name {
+      color: var(--text);
+      font-weight: 800;
+      font-size: 20px;
+      letter-spacing: -.02em;
+    }
+
+    .name-card .tag {
+      color: var(--blue);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 750;
+      margin-top: 8px;
+    }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      color: #dbeafe;
+      background: rgba(125,211,252,.12);
+      border: 1px solid rgba(125,211,252,.18);
+      border-radius: 7px;
+      padding: 2px 6px;
+      font-size: .92em;
+    }
+
+    pre {
+      margin: 16px 0 0;
+      overflow: auto;
+      padding: 18px;
+      border-radius: 16px;
+      background: #070b14;
+      border: 1px solid var(--line);
+      color: #dbeafe;
+      font-size: 13px;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 18px;
+      padding: 22px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .phase:first-child { border-top: 0; padding-top: 0; }
+    .phase:last-child { padding-bottom: 0; }
+
+    .phase-label {
+      font-size: 13px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--purple);
+      font-weight: 800;
+    }
+
+    .phase h3 { margin-bottom: 8px; }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .pill {
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(255,255,255,.05);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 9px;
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .layer {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 16px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.04);
+      border-radius: 16px;
+    }
+
+    .layer-title {
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .kpi-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      overflow: hidden;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+    }
+
+    .kpi-table th, .kpi-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .kpi-table th {
+      color: var(--text);
+      background: rgba(255,255,255,.06);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .kpi-table td { color: var(--muted); }
+    .kpi-table tr:last-child td { border-bottom: none; }
+
+    .risk { color: var(--yellow); font-weight: 750; }
+    .strong { color: var(--text); font-weight: 750; }
+
+    footer {
+      margin-top: 36px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .hero { padding: 34px; }
+      .grid, .decision, .name-grid { grid-template-columns: 1fr; }
+      .span-4, .span-5, .span-6, .span-7, .span-8, .span-12 { grid-column: span 1; }
+      .phase, .layer { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">Product plan · Expo / React Native dependencies</div>
+      <h1>Build a compatibility intelligence engine, not just another dependency updater.</h1>
+      <p>
+        The product should feel like a smarter, friendlier fork of Expo Doctor and rnx-kit align-deps: same core category, but with stronger dependency graph analysis, patch-level exceptions, Renovate/Dependabot PR review, and a curated workaround knowledge base.
+      </p>
+      <div class="badges">
+        <span class="badge">CLI-first</span>
+        <span class="badge">AI-native optional</span>
+        <span class="badge">GitHub Action</span>
+        <span class="badge">Patch/workaround registry</span>
+        <span class="badge">Expo + bare RN</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="card span-7">
+        <h2>Final recommendation</h2>
+        <p>
+          Yes, this is worth building, but the wedge should be very specific: <span class="strong">stable-state protection and intentional exception handling for Expo/RN dependencies</span>.
+        </p>
+        <p>
+          Do not position it as a general Renovate replacement. Do not position it as a magical AI updater. The pain is sharper: “Expo recommends version A, but version A has a bug. Can I safely use B, and what exact patch, override, workaround, or config change do I need?”
+        </p>
+        <div class="callout">
+          <strong>Product thesis:</strong> Expo Doctor and rnx-kit tell you whether your dependency set matches a known policy. This tool should tell you whether your dependency set is stable, why it is not, and what safe remediation path preserves stability.
+        </div>
+      </div>
+
+      <div class="card span-5">
+        <h2>Updated product shape</h2>
+        <ul>
+          <li><strong>Not a wrapper:</strong> it should implement its own analyzers inspired by Expo Doctor + rnx-kit.</li>
+          <li><strong>Not only install --fix:</strong> it should support intentional off-matrix versions.</li>
+          <li><strong>Not only semver:</strong> it should reason about Expo SDK, RN minor/patch, native modules, New Architecture, package manager behavior, and known breakages.</li>
+          <li><strong>Not only local CLI:</strong> it should also review Renovate/Dependabot PRs through a GitHub Action or GitHub App.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Name candidates</h2>
+      <p>
+        Better than <code>rn-align</code>, because the product is not only alignment. It is more about compatibility, stability, and remediation.
+      </p>
+      <div class="name-grid">
+        <div class="name-card">
+          <div class="name">NativeGuard</div>
+          <div class="tag">Best overall</div>
+          <p>Feels protective and applies to Expo + bare RN. Good for CLI, GitHub Action, and SaaS later.</p>
+        </div>
+        <div class="name-card">
+          <div class="name">DepPilot</div>
+          <div class="tag">AI-friendly</div>
+          <p>Good if you lean into guided upgrades and agent workflows. Slightly broader than RN.</p>
+        </div>
+        <div class="name-card">
+          <div class="name">CompatKit</div>
+          <div class="tag">Developer-tooling</div>
+          <p>Clear and boring in a good way. Might be harder to own SEO-wise.</p>
+        </div>
+        <div class="name-card">
+          <div class="name">StableNative</div>
+          <div class="tag">Positioning-first</div>
+          <p>Very clear promise: keep native app dependencies stable.</p>
+        </div>
+        <div class="name-card">
+          <div class="name">ExpoLens</div>
+          <div class="tag">Expo-focused</div>
+          <p>Nice if the first market is Expo-only, but it may feel too narrow later.</p>
+        </div>
+        <div class="name-card">
+          <div class="name">PatchPilot</div>
+          <div class="tag">Workaround-focused</div>
+          <p>Great for patch intelligence, but too patch-specific for the whole product.</p>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>My pick:</strong> <span class="strong">NativeGuard</span>. CLI can be <code>nativeguard</code> or <code>ngd</code>. GitHub check can be “NativeGuard Stability Check”.
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-6">
+        <h2>Core workflows</h2>
+        <ol>
+          <li><strong>Doctor mode:</strong> analyze current repo stability.</li>
+          <li><strong>Explain mode:</strong> explain one dependency/version against Expo SDK + RN + package manager context.</li>
+          <li><strong>Plan mode:</strong> produce a safe upgrade/remediation plan.</li>
+          <li><strong>Apply mode:</strong> apply only deterministic fixes: manifest edits, overrides, excludes, package extensions, patch files.</li>
+          <li><strong>PR review mode:</strong> comment on Renovate/Dependabot PRs when they break the stable state.</li>
+        </ol>
+        <pre><code>nativeguard doctor
+nativeguard explain react-native-reanimated@4.1.0
+nativeguard plan --target expo@54
+nativeguard review-pr --base main --head renovate/react-native-svg-15.x
+nativeguard apply --safe</code></pre>
+      </div>
+
+      <div class="card span-6">
+        <h2>Stable-state model</h2>
+        <p>
+          The important abstraction is not “latest version”. It is <span class="strong">stable state</span>: a dependency graph that is known, intentional, reproducible, and supported by evidence.
+        </p>
+        <ul>
+          <li><strong>Green:</strong> matches Expo/RN matrix and no known issue.</li>
+          <li><strong>Blue:</strong> intentional off-matrix version with evidence and config exclusion.</li>
+          <li><strong>Yellow:</strong> works with required override/workaround/patch.</li>
+          <li><strong>Red:</strong> likely unsafe due to native API, peer, New Architecture, or known regression.</li>
+        </ul>
+        <div class="callout">
+          Renovate/Dependabot PR review becomes simple: compare the PR’s new graph against the repo’s previous stable state, then report any newly introduced risk.
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>How can a CLI get GitHub Issues workarounds or patches?</h2>
+      <p>
+        The CLI should not randomly scrape GitHub Issues at install time and blindly apply code. That would be slow, unreliable, and dangerous. Instead, use a <span class="strong">hybrid knowledge model</span>.
+      </p>
+
+      <div class="architecture">
+        <div class="layer">
+          <div class="layer-title">1. Local static rules</div>
+          <div>
+            Bundle a small, versioned rule pack with high-confidence compatibility data: Expo SDK matrix, RN versions, known peer dependency ranges, package manager recipes, and curated “known issue” records. This can be JSON or SQLite, shipped with the npm package.
+          </div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">2. Remote registry</div>
+          <div>
+            Offer an optional online registry for fresher rules. The CLI can fetch it with caching, ETag, and lockfile-style pinning. CI can pin <code>nativeguard-rules@2026.07.08</code> for reproducibility.
+          </div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">3. Evidence index</div>
+          <div>
+            Store links and extracted metadata from GitHub Issues, PRs, releases, changelogs, Expo discussions, React Native Directory, and docs. Do not store full copyrighted content; store summaries, issue IDs, versions, affected ranges, fix versions, confidence, and source URLs.
+          </div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">4. On-demand research</div>
+          <div>
+            For unknown cases, the CLI can run an optional research command or MCP/AI workflow that searches GitHub and docs, then outputs a proposed rule. The proposal must be human-reviewed or CI-approved before becoming trusted.
+          </div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">5. Verification gate</div>
+          <div>
+            Even if a workaround exists, the CLI should verify locally: reinstall, run static checks, run Expo/RN validation, run TypeScript, optionally run iOS/Android build, and check whether the patch applies cleanly.
+          </div>
+        </div>
+      </div>
+
+      <pre><code>{
+  "package": "react-native-svg",
+  "affected": "15.8.0 - 15.10.x",
+  "context": {
+    "expoSdk": ["54"],
+    "reactNative": ["0.81.x"],
+    "platform": ["android"],
+    "newArchitecture": true
+  },
+  "symptoms": ["Android crash", "Fabric rendering regression"],
+  "safeVersions": ["15.11.2"],
+  "actions": [
+    { "type": "bump", "to": "15.11.2" },
+    { "type": "expoInstallExclude", "package": "react-native-svg" }
+  ],
+  "evidence": [
+    { "type": "github_issue", "url": "https://github.com/...", "confidence": "medium" },
+    { "type": "release_note", "url": "https://github.com/.../releases/tag/...", "confidence": "high" }
+  ],
+  "confidence": "medium",
+  "requiresHumanApproval": true
+}</code></pre>
+
+      <div class="callout">
+        <strong>Answer:</strong> yes, you need a lightweight bundled database, but it should be a curated rule pack, not a huge local vector database. Add optional remote updates and AI-assisted rule generation later.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Architecture</h2>
+      <div class="architecture">
+        <div class="layer">
+          <div class="layer-title">CLI engine</div>
+          <div>Repo scanner, package graph resolver, Expo/RN detector, native module detector, package manager adapter, rule evaluator, report renderer.</div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">Rules registry</div>
+          <div>Compatibility matrix, known bug records, safe exceptions, patch recipes, workaround recipes, deprecated package metadata, New Architecture status.</div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">Remediation engine</div>
+          <div>Generates edits for <code>package.json</code>, lockfile-safe installs, npm/pnpm/Yarn overrides, Yarn packageExtensions, pnpm/Yarn patches, patch-package fallback, Expo excludes.</div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">GitHub Action</div>
+          <div>Runs on PRs from Renovate/Dependabot, compares graph diff, posts risk summary, blocks unsafe changes if configured.</div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">AI/MCP layer</div>
+          <div>Optional. Lets Codex, Claude Code, Cursor, Kilo, OpenCode, or Droid ask the CLI for facts instead of guessing.</div>
+        </div>
+        <div class="layer">
+          <div class="layer-title">Dashboard</div>
+          <div>Later. Cross-repo policy, exception inventory, patch expiry, team approvals, trend reports.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-6">
+        <h2>What to build first</h2>
+        <ul>
+          <li><strong>Own doctor implementation:</strong> not a wrapper, but compatible mental model.</li>
+          <li><strong>Expo SDK matrix loader:</strong> know expected package versions.</li>
+          <li><strong>RN profile model:</strong> support Expo and bare RN projects.</li>
+          <li><strong>Package manager adapters:</strong> npm, pnpm, Yarn, Bun detection and safe remediation primitives.</li>
+          <li><strong>Stable-state snapshot:</strong> store current dependency graph status in CI artifact or repo file.</li>
+          <li><strong>PR review:</strong> detect whether a Renovate/Dependabot PR introduces instability.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h2>What not to build first</h2>
+        <ul>
+          <li><strong>No dashboard-first product.</strong> Too far from the repo-level pain.</li>
+          <li><strong>No broad dependency SaaS.</strong> Renovate, Dependabot, Socket, Snyk, Mend, etc. already own broad update/security workflows.</li>
+          <li><strong>No auto-generated patches without verification.</strong> Trust will die fast if it breaks builds.</li>
+          <li><strong>No huge local scraped database.</strong> Start curated and small.</li>
+          <li><strong>No “AI-only skill”.</strong> Skill should guide agents to call deterministic tooling.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Roadmap</h2>
+      <div class="phase">
+        <div class="phase-label">0–2 weeks</div>
+        <div>
+          <h3>Prototype: dependency graph + report</h3>
+          <p>Build a CLI that scans an Expo/RN repo and prints a useful compatibility report. No fixing yet.</p>
+          <div class="pill-row">
+            <span class="pill">package.json parser</span>
+            <span class="pill">lockfile detection</span>
+            <span class="pill">Expo SDK detection</span>
+            <span class="pill">RN version detection</span>
+            <span class="pill">native module list</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-label">2–6 weeks</div>
+        <div>
+          <h3>MVP: NativeGuard Doctor</h3>
+          <p>Implement Expo Doctor-like checks and rnx-kit-like alignment, but with clearer output, intentional exceptions, and package manager-aware advice.</p>
+          <div class="pill-row">
+            <span class="pill">stable / exception / risky states</span>
+            <span class="pill">Expo install exclude suggestions</span>
+            <span class="pill">peer dependency checks</span>
+            <span class="pill">New Architecture warnings</span>
+            <span class="pill">monorepo support</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-label">6–10 weeks</div>
+        <div>
+          <h3>MVP+: PR review for Renovate/Dependabot</h3>
+          <p>Ship a GitHub Action that runs on dependency PRs and comments whether the update breaks the previous stable state.</p>
+          <div class="pill-row">
+            <span class="pill">graph diff</span>
+            <span class="pill">risk comment</span>
+            <span class="pill">required checks</span>
+            <span class="pill">Renovate labels</span>
+            <span class="pill">Dependabot support</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-label">10–16 weeks</div>
+        <div>
+          <h3>Rules registry v1</h3>
+          <p>Create a curated rule pack for the top 30–50 painful packages in Expo/RN apps. Focus on real-world breakages, not full npm coverage.</p>
+          <div class="pill-row">
+            <span class="pill">known issues</span>
+            <span class="pill">safe version ranges</span>
+            <span class="pill">patch recipes</span>
+            <span class="pill">workaround recipes</span>
+            <span class="pill">evidence links</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-label">4–6 months</div>
+        <div>
+          <h3>Safe apply mode</h3>
+          <p>Allow deterministic fixes with confirmation. Start with manifest/config changes before source patches.</p>
+          <div class="pill-row">
+            <span class="pill">overrides</span>
+            <span class="pill">resolutions</span>
+            <span class="pill">packageExtensions</span>
+            <span class="pill">expo.install.exclude</span>
+            <span class="pill">patch-package / pnpm / Yarn patch</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-label">6–9 months</div>
+        <div>
+          <h3>AI + MCP integration</h3>
+          <p>Expose commands to coding agents. The agent should call the CLI for dependency truth, then edit code only when the CLI returns a clear plan.</p>
+          <div class="pill-row">
+            <span class="pill">MCP server</span>
+            <span class="pill">Codex/Claude/Cursor skills</span>
+            <span class="pill">structured JSON output</span>
+            <span class="pill">agent-safe permissions</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-label">9–12 months</div>
+        <div>
+          <h3>Team product</h3>
+          <p>Add hosted registry, dashboard, team policies, patch expiry reports, and exception approval workflows.</p>
+          <div class="pill-row">
+            <span class="pill">dashboard</span>
+            <span class="pill">org policies</span>
+            <span class="pill">exception inventory</span>
+            <span class="pill">hosted rule updates</span>
+            <span class="pill">commercial plan</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-6">
+        <h2>MVP scope</h2>
+        <p>Keep it narrow enough to finish and useful enough to validate.</p>
+        <ul>
+          <li>Expo SDK 53–57 and matching RN versions.</li>
+          <li>npm, pnpm, Yarn. Bun read-only at first.</li>
+          <li>Top libraries: Reanimated, Gesture Handler, Screens, Safe Area Context, SVG, Skia, MMKV, Maps, Firebase, Expo modules, bottom sheets, navigation packages.</li>
+          <li>CLI report + GitHub Action review.</li>
+          <li>Curated rules only; no autonomous GitHub scraping by default.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h2>Validation strategy</h2>
+        <ul>
+          <li>Test on 10–20 real Expo/RN repos, including your own app.</li>
+          <li>Collect before/after upgrade failure examples.</li>
+          <li>Ask RN teams for their existing patch-package folders and upgrade notes.</li>
+          <li>Launch as free OSS CLI, charge later for hosted rule updates / team dashboard.</li>
+          <li>Make the PR review comment so useful that teams keep it in CI.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Example PR review output</h2>
+      <pre><code>NativeGuard Stability Check
+
+PR: renovate/react-native-svg-15.x
+Change: react-native-svg 15.8.0 → 15.11.2
+Project: Expo SDK 54 · React Native 0.81 · New Architecture enabled · pnpm
+
+Status: ACCEPTABLE EXCEPTION
+
+Why:
+- Expo SDK 54 recommends 15.8.0
+- 15.11.2 is outside the Expo-tested matrix
+- However, this version fixes a known Android rendering issue
+- No incompatible peer/native API change detected from package metadata
+
+Required actions:
+1. Keep react-native-svg at 15.11.2
+2. Add expo.install.exclude: ["react-native-svg"]
+3. Run pnpm install
+4. Run expo prebuild --clean only if native folders are generated
+5. Verify Android release build
+
+Risk: medium
+Confidence: medium
+Human review: required</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>Business model</h2>
+      <table class="kpi-table">
+        <thead>
+          <tr>
+            <th>Stage</th>
+            <th>Offer</th>
+            <th>Why people pay</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="strong">OSS CLI</span></td>
+            <td>Free local doctor, explain, PR report basics.</td>
+            <td>Adoption, trust, community rules, GitHub stars.</td>
+          </tr>
+          <tr>
+            <td><span class="strong">Pro rules</span></td>
+            <td>Hosted rule registry, fresher compatibility data, private rules.</td>
+            <td>Teams save time during Expo/RN upgrades and avoid release-blocking dependency failures.</td>
+          </tr>
+          <tr>
+            <td><span class="strong">Team dashboard</span></td>
+            <td>Cross-repo stability, exception approvals, patch expiry, policy enforcement.</td>
+            <td>Managers and platform teams need visibility and governance.</td>
+          </tr>
+          <tr>
+            <td><span class="strong">Consulting / support</span></td>
+            <td>Upgrade assistance for Expo SDK/RN migration.</td>
+            <td>High willingness to pay when builds are blocked near release.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Risks and mitigations</h2>
+      <table class="kpi-table">
+        <thead>
+          <tr>
+            <th>Risk</th>
+            <th>Mitigation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="risk">Bad patch breaks production</span></td>
+            <td>No blind apply. Require confidence levels, local verification, and human approval for source patches.</td>
+          </tr>
+          <tr>
+            <td><span class="risk">Knowledge base becomes stale</span></td>
+            <td>Rules have expiry dates, evidence dates, SDK scopes, and CI warnings when a rule is old.</td>
+          </tr>
+          <tr>
+            <td><span class="risk">Too much maintenance</span></td>
+            <td>Start with top painful libraries and community-submitted rules. Do not attempt full npm coverage.</td>
+          </tr>
+          <tr>
+            <td><span class="risk">Expo changes official tooling</span></td>
+            <td>Position as exception/remediation layer, not Expo Doctor clone only.</td>
+          </tr>
+          <tr>
+            <td><span class="risk">Renovate already owns PRs</span></td>
+            <td>Complement Renovate. Review dependency PRs instead of opening all updates yourself.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Go / no-go decision</h2>
+      <div class="decision">
+        <div class="yes">
+          <h3>Go if…</h3>
+          <ul>
+            <li>You can build a useful <code>doctor</code> report in under 4–6 weeks.</li>
+            <li>Real projects show repeated false positives, off-matrix dependency needs, or patch-package usage.</li>
+            <li>PR review catches issues normal Renovate/Dependabot cannot explain.</li>
+            <li>Users say: “I wish I had this during my last Expo/RN upgrade.”</li>
+          </ul>
+        </div>
+        <div class="no">
+          <h3>Do not go all in if…</h3>
+          <ul>
+            <li>The first version is only a nicer wrapper around existing tools.</li>
+            <li>The rule registry cannot stay accurate.</li>
+            <li>Most fixes require manual expertise and cannot be encoded as reusable recipes.</li>
+            <li>Teams are unwilling to run another CI check.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>Practical verdict:</strong> build the CLI + PR review MVP first. Treat the workaround database as the moat, but start tiny and curated. AI comes after the deterministic engine is useful.
+      </div>
+    </section>
+
+    <footer>
+      Prepared as a product plan and roadmap for an Expo / React Native dependency compatibility tool.
+    </footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "@nativeguard/core",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@nativeguard/rules": "workspace:*",
+    "@nativeguard/schema": "workspace:*"
+  }
+}

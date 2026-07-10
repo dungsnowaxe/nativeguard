@@ -5,7 +5,7 @@ export const SNAPSHOT_SCHEMA_VERSION = "1.0.0";
 export const PR_REVIEW_SCHEMA_VERSION = "1.0.0";
 export const RULE_SCHEMA_VERSION = "1.0.0";
 
-export type ProjectKind = "expo-prebuild" | "bare-react-native" | "expo-go";
+export type ProjectKind = "expo-managed" | "expo-prebuild" | "bare-react-native" | "expo-go";
 export type PackageManagerName = "npm" | "yarn" | "pnpm" | "bun" | "unknown";
 export type FindingSeverity = "info" | "warning" | "error";
 export type StabilityStatus = "stable" | "accepted-exception" | "risky" | "unsupported";
@@ -55,9 +55,29 @@ export interface ProjectProfile {
   reactNativeVersion?: string;
   hasIosProject: boolean;
   hasAndroidProject: boolean;
+  hasGeneratedNativeProjects?: boolean;
+  hasExpoRouter?: boolean;
+  hasExpoModules?: boolean;
+  expoModulesPackages?: string[];
+  newArchitecture?: {
+    enabled?: boolean;
+    sources: string[];
+  };
+  workspace?: {
+    root: string;
+    type: "npm" | "pnpm" | "yarn" | "unknown";
+    isWorkspaceRoot: boolean;
+  };
+  lockfileState?: {
+    path?: string;
+    present: boolean;
+    fresh?: boolean;
+  };
+  detectionConfidence?: Confidence;
 }
 
 export interface ToolchainContext {
+  packageManager: PackageManagerName;
   nodeVersion?: string;
   packageManagerVersion?: string;
   expoCliVersion?: string;
@@ -76,6 +96,20 @@ export interface ToolchainContext {
     platform?: "ios" | "android" | "all";
   };
   missingContext: string[];
+}
+
+export interface NativeGuardEnvironmentReport {
+  schemaVersion: typeof DOCTOR_REPORT_SCHEMA_VERSION;
+  generatedAt: string;
+  nativeguard: {
+    cliVersion: string;
+  };
+  project: ProjectProfile;
+  toolchain: ToolchainContext;
+  redaction: {
+    applied: boolean;
+    hiddenFields: string[];
+  };
 }
 
 export interface NativeGuardConfig {
@@ -113,6 +147,7 @@ export interface DependencySnapshot {
     path: string;
     lockfileVersion?: number;
     packageCount: number;
+    fresh?: boolean;
   };
 }
 
@@ -509,6 +544,27 @@ export function validateNativeGuardReportV1(value: unknown): ValidationResult {
   requireArray(value, "recommendedActions", errors);
   requireArray(value, "requiredVerification", errors);
   if (!isRecord(value.exitDecision)) errors.push("exitDecision must be an object");
+  if (!isRecord(value.redaction)) errors.push("redaction must be an object");
+
+  return { valid: errors.length === 0, errors };
+}
+
+export function validateNativeGuardEnvironmentReport(value: unknown): ValidationResult {
+  const errors: string[] = [];
+  if (!isRecord(value)) {
+    return { valid: false, errors: ["environment report must be an object"] };
+  }
+
+  requireString(value, "schemaVersion", errors);
+  requireString(value, "generatedAt", errors);
+  if (!isRecord(value.nativeguard)) errors.push("nativeguard must be an object");
+  if (!isRecord(value.project)) errors.push("project must be an object");
+  if (!isRecord(value.toolchain)) {
+    errors.push("toolchain must be an object");
+  } else {
+    requireString(value.toolchain, "packageManager", errors);
+    requireArray(value.toolchain, "missingContext", errors);
+  }
   if (!isRecord(value.redaction)) errors.push("redaction must be an object");
 
   return { valid: errors.length === 0, errors };

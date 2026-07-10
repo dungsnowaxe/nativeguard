@@ -11,6 +11,7 @@ import {
   validateDoctorReport,
   validateLockfile,
   validateNativeGuardConfig,
+  validateNativeGuardEnvironmentReport,
   validateNativeGuardReportV1,
   validateNativeGuardSnapshot,
   validatePrReviewReport
@@ -96,7 +97,7 @@ test("validates v1 report shape", () => {
     generatedAt: new Date().toISOString(),
     nativeguard: { cliVersion: "0.0.0", rulesPackage: { name: "@nativeguard/rules", version: "0.0.0" } },
     project: {},
-    toolchain: { missingContext: [] },
+    toolchain: { packageManager: "npm", missingContext: [] },
     summary: { status: "green", findingCounts: { info: 0, warning: 0, error: 0 }, unknownCount: 0, staleExceptionCount: 0 },
     dependencyNodes: [],
     findings: [],
@@ -133,13 +134,26 @@ test("validates snapshot shape", () => {
     generatedAt: new Date().toISOString(),
     nativeguard: { cliVersion: "0.0.0", rulesPackage: { name: "@nativeguard/rules", version: "0.0.0" } },
     project: {},
-    toolchain: { missingContext: [] },
+    toolchain: { packageManager: "npm", missingContext: [] },
     dependencyGraphFingerprint: "graph",
     projectContextFingerprint: "context",
     rulePackVersion: "0.0.0",
     dependencyNodes: [],
     exceptions: [],
     redaction: { applied: false, hiddenFields: [] }
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("validates environment report shape", () => {
+  const result = validateNativeGuardEnvironmentReport({
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    nativeguard: { cliVersion: "0.0.0" },
+    project: {},
+    toolchain: { packageManager: "npm", missingContext: [] },
+    redaction: { applied: true, hiddenFields: ["project.root"] }
   });
 
   assert.equal(result.valid, true);

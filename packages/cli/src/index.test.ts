@@ -76,6 +76,45 @@ test("prints doctor JSON and writes lockfile", async () => {
   }
 });
 
+test("prints redacted environment report JSON", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-env-report-"));
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        packageManager: "npm@11.10.0",
+        dependencies: {
+          expo: "54.0.0",
+          "react-native": "0.81.0"
+        }
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const output = await captureStdout(() => main(["env-report", "--json"]));
+    assert.equal(output.exitCode, 0);
+    const parsed = JSON.parse(output.stdout) as {
+      project: { root: string; kind: string };
+      toolchain: { packageManager: string; packageManagerVersion: string };
+      redaction: { applied: boolean };
+    };
+    assert.equal(parsed.project.root, "<redacted>");
+    assert.equal(parsed.project.kind, "expo-managed");
+    assert.equal(parsed.toolchain.packageManager, "npm");
+    assert.equal(parsed.toolchain.packageManagerVersion, "11.10.0");
+    assert.equal(parsed.redaction.applied, true);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";

@@ -1,4 +1,4 @@
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
@@ -8,12 +8,14 @@ import {
   type DependencySnapshot,
   type DoctorReport,
   type Finding,
+  type NativeGuardEnvironmentReport,
   type NativeGuardLockfile,
   type PackageIssue,
   type PackageManagerName,
   type ProjectKind,
   type ProjectProfile,
   type StabilityStatus,
+  type ToolchainContext,
   validateLockfile
 } from "@nativeguard/schema";
 
@@ -33,8 +35,13 @@ export interface AnalyzeOptions {
 }
 
 interface PackageJson {
+  packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  workspaces?: string[] | { packages?: string[] };
+  expo?: {
+    newArchEnabled?: boolean;
+  };
 }
 
 export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorReport> {
@@ -59,6 +66,27 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     packageIssues,
     findings,
     nextActions: createNextActions(summary.status, profile.packageManager)
+  };
+}
+
+export async function createEnvironmentReport(options: AnalyzeOptions): Promise<NativeGuardEnvironmentReport> {
+  const root = path.resolve(options.rootDir);
+  const packageJson = await readPackageJson(root);
+  const project = await detectProjectProfile(root, packageJson);
+  const toolchain = await collectToolchainContext(root, project.packageManager, packageJson);
+
+  return {
+    schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
+    generatedAt: (options.now ?? new Date()).toISOString(),
+    nativeguard: {
+      cliVersion: options.cliVersion
+    },
+    project: redactProjectProfile(project),
+    toolchain,
+    redaction: {
+      applied: true,
+      hiddenFields: ["project.root", "project.workspace.root"]
+    }
   };
 }
 
@@ -117,40 +145,51 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   const hasIosProject = await exists(path.join(root, "ios"));
   const hasAndroidProject = await exists(path.join(root, "android"));
   const packageManager = await detectPackageManager(root);
+  const lockfileState = await detectLockfileState(root, packageManager);
+  const appConfig = await readExpoAppConfig(root);
+  const workspace = await detectWorkspace(root, packageJson);
+  const expoModulesPackages = Object.keys(dependencies)
+    .filter(name => name === "expo-modules-core" || name.startsWith("expo-"))
+    .sort();
+  const hasExpoRouter = Boolean(dependencies["expo-router"] || (await exists(path.join(root, "app"))));
+  const hasExpoModules = Boolean(expoVersion || expoModulesPackages.length > 0);
+  const newArchitecture = await detectNewArchitecture(root, packageJson, appConfig);
+  const baseProfile = {
+    root,
+    packageManager,
+    ...(await detectPackageManagerVersion(root, packageManager, packageJson)),
+    ...(expoVersion ? { expoVersion } : {}),
+    ...(reactNativeVersion ? { reactNativeVersion } : {}),
+    hasIosProject,
+    hasAndroidProject,
+    hasGeneratedNativeProjects: hasIosProject || hasAndroidProject,
+    hasExpoRouter,
+    hasExpoModules,
+    expoModulesPackages,
+    newArchitecture,
+    ...(workspace ? { workspace } : {}),
+    lockfileState,
+    detectionConfidence: "high" as const
+  };
 
   if (expoVersion && (hasIosProject || hasAndroidProject)) {
     return {
-      root,
+      ...baseProfile,
       kind: "expo-prebuild",
-      packageManager,
-      expoVersion,
-      ...(reactNativeVersion ? { reactNativeVersion } : {}),
-      hasIosProject,
-      hasAndroidProject
     };
   }
 
   if (reactNativeVersion && (hasIosProject || hasAndroidProject)) {
     return {
-      root,
+      ...baseProfile,
       kind: "bare-react-native",
-      packageManager,
-      ...(expoVersion ? { expoVersion } : {}),
-      reactNativeVersion,
-      hasIosProject,
-      hasAndroidProject
     };
   }
 
   if (expoVersion) {
     return {
-      root,
-      kind: "expo-go",
-      packageManager,
-      expoVersion,
-      ...(reactNativeVersion ? { reactNativeVersion } : {}),
-      hasIosProject,
-      hasAndroidProject
+      ...baseProfile,
+      kind: "expo-managed"
     };
   }
 
@@ -160,11 +199,43 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   );
 }
 
+export async function collectToolchainContext(
+  root: string,
+  packageManager: PackageManagerName,
+  packageJson: PackageJson = {}
+): Promise<ToolchainContext> {
+  const missingContext: string[] = [];
+  const packageManagerVersion = (await detectPackageManagerVersion(root, packageManager, packageJson)).packageManagerVersion;
+  const easProfile = await detectEasProfile(root);
+  const gradleVersion = await readGradleVersion(root);
+  const androidGradlePluginVersion = await readAndroidGradlePluginVersion(root);
+  const kotlinVersion = await readKotlinVersion(root);
+  const androidSdk = await readAndroidSdkVersions(root);
+
+  if (!packageManagerVersion) missingContext.push("packageManagerVersion");
+  if (!(await exists(path.join(root, "ios", "Podfile.lock")))) missingContext.push("cocoaPodsVersion");
+  if (!gradleVersion) missingContext.push("gradleVersion");
+  if (!androidGradlePluginVersion) missingContext.push("androidGradlePluginVersion");
+  if (!kotlinVersion) missingContext.push("kotlinVersion");
+
+  return {
+    packageManager,
+    nodeVersion: process.version,
+    ...(packageManagerVersion ? { packageManagerVersion } : {}),
+    ...(easProfile ? { easProfile } : {}),
+    ...(gradleVersion ? { gradleVersion } : {}),
+    ...(androidGradlePluginVersion ? { androidGradlePluginVersion } : {}),
+    ...(kotlinVersion ? { kotlinVersion } : {}),
+    ...(androidSdk ? { androidSdk } : {}),
+    missingContext
+  };
+}
+
 export async function detectPackageManager(root: string): Promise<PackageManagerName> {
-  if (await exists(path.join(root, "package-lock.json"))) return "npm";
-  if (await exists(path.join(root, "yarn.lock"))) return "yarn";
-  if (await exists(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
-  if (await exists(path.join(root, "bun.lockb")) || (await exists(path.join(root, "bun.lock")))) return "bun";
+  if (await findLockfile(root, ["package-lock.json"])) return "npm";
+  if (await findLockfile(root, ["yarn.lock"])) return "yarn";
+  if (await findLockfile(root, ["pnpm-lock.yaml"])) return "pnpm";
+  if (await findLockfile(root, ["bun.lockb", "bun.lock"])) return "bun";
   return "unknown";
 }
 
@@ -181,7 +252,8 @@ async function readPackageJson(root: string): Promise<PackageJson> {
 }
 
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {
-  const lockfile = await readNpmLockfile(root);
+  const packageManager = await detectPackageManager(root);
+  const lockfile = await readLockfile(root, packageManager);
   return {
     dependencies: packageJson.dependencies ?? {},
     devDependencies: packageJson.devDependencies ?? {},
@@ -189,15 +261,22 @@ async function createDependencySnapshot(root: string, packageJson: PackageJson):
   };
 }
 
-async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfile"]> {
-  const lockfilePath = path.join(root, "package-lock.json");
+async function readLockfile(root: string, packageManager: PackageManagerName): Promise<DependencySnapshot["lockfile"]> {
+  const lockfilePath = await lockfilePathFor(root, packageManager);
+  if (!lockfilePath) return undefined;
+
   try {
-    const raw = await readFile(lockfilePath, "utf8");
-    const parsed = JSON.parse(raw) as { lockfileVersion?: number; packages?: Record<string, unknown> };
+    const raw = await readFile(lockfilePath.absolute, "utf8");
+    const parsed = lockfilePath.relative === "package-lock.json"
+      ? JSON.parse(raw) as { lockfileVersion?: number; packages?: Record<string, unknown> }
+      : undefined;
+    const packageCount = parsed?.packages ? Object.keys(parsed.packages).length : countLockfilePackages(raw, lockfilePath.relative);
+    const fresh = await isLockfileFresh(root, lockfilePath.absolute);
     return {
-      path: "package-lock.json",
-      ...(parsed.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
-      packageCount: parsed.packages ? Object.keys(parsed.packages).length : 0
+      path: lockfilePath.relative,
+      ...(parsed?.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
+      packageCount,
+      ...(fresh === undefined ? {} : { fresh })
     };
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
@@ -205,6 +284,270 @@ async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfi
     }
     throw error;
   }
+}
+
+async function readExpoAppConfig(root: string): Promise<{ newArchEnabled?: boolean } | undefined> {
+  const appJson = await readJsonFile<{ expo?: { newArchEnabled?: boolean } }>(path.join(root, "app.json"));
+  if (appJson?.expo && typeof appJson.expo.newArchEnabled === "boolean") {
+    return { newArchEnabled: appJson.expo.newArchEnabled };
+  }
+
+  const appConfigJson = await readJsonFile<{ expo?: { newArchEnabled?: boolean } }>(path.join(root, "app.config.json"));
+  if (appConfigJson?.expo && typeof appConfigJson.expo.newArchEnabled === "boolean") {
+    return { newArchEnabled: appConfigJson.expo.newArchEnabled };
+  }
+
+  return undefined;
+}
+
+async function detectNewArchitecture(
+  root: string,
+  packageJson: PackageJson,
+  appConfig: { newArchEnabled?: boolean } | undefined
+): Promise<{ enabled?: boolean; sources: string[] }> {
+  const sources: string[] = [];
+  let enabled: boolean | undefined;
+
+  if (typeof packageJson.expo?.newArchEnabled === "boolean") {
+    enabled = packageJson.expo.newArchEnabled;
+    sources.push("package.json:expo.newArchEnabled");
+  }
+
+  if (typeof appConfig?.newArchEnabled === "boolean") {
+    enabled = appConfig.newArchEnabled;
+    sources.push("app.json:expo.newArchEnabled");
+  }
+
+  const gradleProperties = await readTextIfExists(path.join(root, "android", "gradle.properties"));
+  if (gradleProperties) {
+    const match = gradleProperties.match(/^newArchEnabled=(true|false)$/m);
+    if (match?.[1]) {
+      enabled = match[1] === "true";
+      sources.push("android/gradle.properties:newArchEnabled");
+    }
+  }
+
+  const podfileProperties = await readJsonFile<{ newArchEnabled?: string | boolean }>(
+    path.join(root, "ios", "Podfile.properties.json")
+  );
+  if (typeof podfileProperties?.newArchEnabled === "boolean" || typeof podfileProperties?.newArchEnabled === "string") {
+    enabled = podfileProperties.newArchEnabled === true || podfileProperties.newArchEnabled === "true";
+    sources.push("ios/Podfile.properties.json:newArchEnabled");
+  }
+
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    sources
+  };
+}
+
+async function detectWorkspace(
+  root: string,
+  packageJson: PackageJson
+): Promise<{ root: string; type: "npm" | "pnpm" | "yarn" | "unknown"; isWorkspaceRoot: boolean } | undefined> {
+  const pnpmWorkspaceRoot = await findUp(root, "pnpm-workspace.yaml");
+  if (pnpmWorkspaceRoot) {
+    return {
+      root: pnpmWorkspaceRoot,
+      type: "pnpm",
+      isWorkspaceRoot: pnpmWorkspaceRoot === root
+    };
+  }
+
+  const workspaces = packageJson.workspaces;
+  const hasPackageJsonWorkspaces = Array.isArray(workspaces) || Array.isArray(workspaces?.packages);
+  if (hasPackageJsonWorkspaces) {
+    return {
+      root,
+      type: "npm",
+      isWorkspaceRoot: true
+    };
+  }
+
+  return undefined;
+}
+
+async function detectLockfileState(
+  root: string,
+  packageManager: PackageManagerName
+): Promise<{ path?: string; present: boolean; fresh?: boolean }> {
+  const lockfile = await lockfilePathFor(root, packageManager);
+  if (!lockfile) {
+    return { present: false };
+  }
+
+  const present = await exists(lockfile.absolute);
+  if (!present) {
+    return {
+      path: lockfile.relative,
+      present: false
+    };
+  }
+
+  const fresh = await isLockfileFresh(root, lockfile.absolute);
+  return {
+    path: lockfile.relative,
+    present: true,
+    ...(fresh === undefined ? {} : { fresh })
+  };
+}
+
+async function detectPackageManagerVersion(
+  root: string,
+  packageManager: PackageManagerName,
+  packageJson: PackageJson
+): Promise<Pick<ProjectProfile, "packageManagerVersion">> {
+  if (packageJson.packageManager) {
+    const [, version] = packageJson.packageManager.split("@");
+    if (version) return { packageManagerVersion: version };
+  }
+
+  const rootPackageJson = await readJsonFile<PackageJson>(path.join(root, "package.json"));
+  if (rootPackageJson?.packageManager) {
+    const [, version] = rootPackageJson.packageManager.split("@");
+    if (version) return { packageManagerVersion: version };
+  }
+
+  if (packageManager === "npm" && process.env.npm_config_user_agent) {
+    const match = process.env.npm_config_user_agent.match(/npm\/([^\s]+)/);
+    if (match?.[1]) return { packageManagerVersion: match[1] };
+  }
+
+  return {};
+}
+
+async function detectEasProfile(root: string): Promise<ToolchainContext["easProfile"] | undefined> {
+  const easJson = await readJsonFile<{ build?: Record<string, unknown> }>(path.join(root, "eas.json"));
+  const profileName = easJson?.build ? Object.keys(easJson.build)[0] : undefined;
+  return profileName ? { name: profileName, platform: "all" } : undefined;
+}
+
+async function readGradleVersion(root: string): Promise<string | undefined> {
+  const wrapper = await readTextIfExists(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.properties"));
+  return wrapper?.match(/gradle-([0-9.]+)-/)?.[1];
+}
+
+async function readAndroidGradlePluginVersion(root: string): Promise<string | undefined> {
+  const settingsGradle = await readTextIfExists(path.join(root, "android", "settings.gradle"));
+  return settingsGradle?.match(/com\.android\.application["']?\s+version\s+["']([^"']+)["']/)?.[1];
+}
+
+async function readKotlinVersion(root: string): Promise<string | undefined> {
+  const buildGradle = await readTextIfExists(path.join(root, "android", "build.gradle"));
+  return buildGradle?.match(/kotlinVersion\s*=\s*["']([^"']+)["']/)?.[1];
+}
+
+async function readAndroidSdkVersions(root: string): Promise<ToolchainContext["androidSdk"] | undefined> {
+  const buildGradle = await readTextIfExists(path.join(root, "android", "build.gradle"));
+  if (!buildGradle) return undefined;
+  const compileSdk = buildGradle.match(/compileSdkVersion\s*=?\s*(\d+)/)?.[1];
+  const targetSdk = buildGradle.match(/targetSdkVersion\s*=?\s*(\d+)/)?.[1];
+  const minSdk = buildGradle.match(/minSdkVersion\s*=?\s*(\d+)/)?.[1];
+  if (!compileSdk && !targetSdk && !minSdk) return undefined;
+  return {
+    ...(compileSdk ? { compileSdk } : {}),
+    ...(targetSdk ? { targetSdk } : {}),
+    ...(minSdk ? { minSdk } : {})
+  };
+}
+
+async function isLockfileFresh(root: string, lockfilePath: string): Promise<boolean | undefined> {
+  try {
+    const [packageJsonStat, lockfileStat] = await Promise.all([
+      stat(path.join(root, "package.json")),
+      stat(lockfilePath)
+    ]);
+    return lockfileStat.mtimeMs >= packageJsonStat.mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+async function lockfilePathFor(
+  root: string,
+  packageManager: PackageManagerName
+): Promise<{ absolute: string; relative: string } | undefined> {
+  if (packageManager === "npm") return findLockfile(root, ["package-lock.json"]);
+  if (packageManager === "yarn") return findLockfile(root, ["yarn.lock"]);
+  if (packageManager === "pnpm") return findLockfile(root, ["pnpm-lock.yaml"]);
+  if (packageManager === "bun") return findLockfile(root, ["bun.lock", "bun.lockb"]);
+  return undefined;
+}
+
+async function findLockfile(
+  root: string,
+  fileNames: string[]
+): Promise<{ absolute: string; relative: string } | undefined> {
+  let current = path.resolve(root);
+  while (true) {
+    for (const fileName of fileNames) {
+      const absolute = path.join(current, fileName);
+      if (await exists(absolute)) {
+        return {
+          absolute,
+          relative: path.relative(root, absolute) || fileName
+        };
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function countLockfilePackages(raw: string, lockfileName: string): number {
+  if (lockfileName === "pnpm-lock.yaml") {
+    return raw.split("\n").filter(line => /^\s{2}\/[^:]+:/.test(line)).length;
+  }
+  if (lockfileName === "yarn.lock") {
+    return raw.split("\n").filter(line => /^[^#\s][^:]+:/.test(line)).length;
+  }
+  return 0;
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | undefined> {
+  const raw = await readTextIfExists(filePath);
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readTextIfExists(filePath: string): Promise<string | undefined> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    throw error;
+  }
+}
+
+async function findUp(start: string, fileName: string): Promise<string | undefined> {
+  let current = path.resolve(start);
+  while (true) {
+    if (await exists(path.join(current, fileName))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function redactProjectProfile(profile: ProjectProfile): ProjectProfile {
+  return {
+    ...profile,
+    root: "<redacted>",
+    ...(profile.workspace
+      ? {
+          workspace: {
+            ...profile.workspace,
+            root: "<redacted>"
+          }
+        }
+      : {})
+  };
 }
 
 function evaluateRules(
@@ -442,8 +785,10 @@ export type {
   DependencySnapshot,
   DoctorReport,
   Finding,
+  NativeGuardEnvironmentReport,
   NativeGuardLockfile,
   PackageManagerName,
   ProjectKind,
-  ProjectProfile
+  ProjectProfile,
+  ToolchainContext
 };

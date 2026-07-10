@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   analyzeProject,
+  collectToolchainContext,
+  createEnvironmentReport,
   detectPackageManager,
   detectProjectProfile,
   readNativeGuardLockfile,
@@ -41,7 +43,7 @@ test("detects bare React Native projects", async () => {
   assert.equal(profile.kind, "bare-react-native");
 });
 
-test("detects Expo Go projects", async () => {
+test("detects Expo managed projects", async () => {
   const root = await fixture({
     dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
     lockfile: "npm"
@@ -51,7 +53,8 @@ test("detects Expo Go projects", async () => {
     dependencies: { expo: "54.0.0", "react-native": "0.81.0" }
   });
 
-  assert.equal(profile.kind, "expo-go");
+  assert.equal(profile.kind, "expo-managed");
+  assert.equal(profile.hasGeneratedNativeProjects, false);
 });
 
 test("detects non-npm package managers", async () => {
@@ -61,6 +64,143 @@ test("detects non-npm package managers", async () => {
   });
 
   assert.equal(await detectPackageManager(root), "yarn");
+});
+
+test("detects Expo Router, Expo modules, New Architecture, and lockfile freshness", async () => {
+  const root = await fixture({
+    packageJson: {
+      private: true,
+      packageManager: "pnpm@11.10.0",
+      dependencies: {
+        expo: "54.0.0",
+        "expo-router": "6.0.0",
+        "expo-modules-core": "3.0.0",
+        "react-native": "0.81.0"
+      },
+      expo: {
+        newArchEnabled: true
+      }
+    },
+    directories: ["app"],
+    lockfile: "pnpm"
+  });
+
+  const profile = await detectProjectProfile(root, {
+    packageManager: "pnpm@11.10.0",
+    dependencies: {
+      expo: "54.0.0",
+      "expo-router": "6.0.0",
+      "expo-modules-core": "3.0.0",
+      "react-native": "0.81.0"
+    },
+    expo: {
+      newArchEnabled: true
+    }
+  });
+
+  assert.equal(profile.kind, "expo-managed");
+  assert.equal(profile.packageManager, "pnpm");
+  assert.equal(profile.packageManagerVersion, "11.10.0");
+  assert.equal(profile.hasExpoRouter, true);
+  assert.equal(profile.hasExpoModules, true);
+  assert.deepEqual(profile.expoModulesPackages, ["expo-modules-core", "expo-router"]);
+  assert.equal(profile.newArchitecture?.enabled, true);
+  assert.deepEqual(profile.newArchitecture?.sources, ["package.json:expo.newArchEnabled"]);
+  assert.equal(profile.lockfileState?.path, "pnpm-lock.yaml");
+  assert.equal(profile.lockfileState?.present, true);
+});
+
+test("detects pnpm workspace roots", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-workspace-"));
+  await writeFile(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - apps/*\n");
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\npackages: {}\n");
+  const appRoot = path.join(root, "apps", "mobile");
+  await mkdir(appRoot, { recursive: true });
+  await writeFile(
+    path.join(appRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0" } }, null, 2)
+  );
+
+  const profile = await detectProjectProfile(appRoot, {
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" }
+  });
+
+  assert.equal(profile.packageManager, "pnpm");
+  assert.equal(profile.workspace?.root, root);
+  assert.equal(profile.workspace?.type, "pnpm");
+  assert.equal(profile.workspace?.isWorkspaceRoot, false);
+  assert.equal(profile.lockfileState?.path, "../../pnpm-lock.yaml");
+});
+
+test("collects toolchain context from native config files", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+    directories: ["android/gradle/wrapper"],
+    lockfile: "npm",
+    files: {
+      "android/gradle/wrapper/gradle-wrapper.properties": "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-all.zip\n",
+      "android/settings.gradle": "plugins { id 'com.android.application' version '8.7.0' apply false }\n",
+      "android/build.gradle": "ext { kotlinVersion = '2.0.21' }\ncompileSdkVersion = 35\nminSdkVersion = 24\ntargetSdkVersion = 35\n",
+      "eas.json": JSON.stringify({ build: { production: {} } }, null, 2)
+    }
+  });
+
+  const toolchain = await collectToolchainContext(root, "npm", {
+    packageManager: "npm@11.10.0",
+    dependencies: { expo: "54.0.0" }
+  });
+
+  assert.equal(toolchain.packageManager, "npm");
+  assert.equal(toolchain.packageManagerVersion, "11.10.0");
+  assert.equal(toolchain.gradleVersion, "8.10.2");
+  assert.equal(toolchain.androidGradlePluginVersion, "8.7.0");
+  assert.equal(toolchain.kotlinVersion, "2.0.21");
+  assert.deepEqual(toolchain.androidSdk, { compileSdk: "35", targetSdk: "35", minSdk: "24" });
+  assert.equal(toolchain.easProfile?.name, "production");
+});
+
+test("creates redacted environment reports", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+    lockfile: "npm"
+  });
+
+  const report = await createEnvironmentReport({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  assert.equal(report.project.root, "<redacted>");
+  assert.equal(report.toolchain.packageManager, "npm");
+  assert.equal(report.redaction.applied, true);
+  assert.deepEqual(report.redaction.hiddenFields, ["project.root", "project.workspace.root"]);
+});
+
+test("detects persistent stage 2 fixtures", async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+  const expoManaged = await analyzeProject({
+    rootDir: path.join(repoRoot, "fixtures", "expo-managed"),
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+  assert.equal(expoManaged.project.kind, "expo-managed");
+  assert.equal(expoManaged.project.hasExpoRouter, true);
+  assert.equal(expoManaged.project.newArchitecture?.enabled, true);
+
+  const pnpmFixture = await detectProjectProfile(path.join(repoRoot, "fixtures", "package-managers", "pnpm"), {
+    packageManager: "pnpm@11.10.0",
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" }
+  });
+  assert.equal(pnpmFixture.packageManager, "pnpm");
+  assert.equal(pnpmFixture.lockfileState?.path, "pnpm-lock.yaml");
+
+  const monorepoFixture = await detectProjectProfile(path.join(repoRoot, "fixtures", "monorepo", "apps", "mobile"), {
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" }
+  });
+  assert.equal(monorepoFixture.workspace?.type, "pnpm");
+  assert.equal(monorepoFixture.lockfileState?.path, "../../pnpm-lock.yaml");
 });
 
 test("analyzes project and writes lockfile", async () => {
@@ -157,14 +297,16 @@ test("analyzes the Expo prebuild issue-version fixture", async () => {
 });
 
 async function fixture(options: {
-  dependencies: Record<string, string>;
+  dependencies?: Record<string, string>;
+  packageJson?: Record<string, unknown>;
   directories?: string[];
   lockfile?: "npm" | "yarn" | "pnpm" | "bun";
+  files?: Record<string, string>;
 }): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-fixture-"));
   await writeFile(
     path.join(root, "package.json"),
-    JSON.stringify({ private: true, dependencies: options.dependencies }, null, 2)
+    JSON.stringify(options.packageJson ?? { private: true, dependencies: options.dependencies }, null, 2)
   );
 
   for (const directory of options.directories ?? []) {
@@ -182,6 +324,12 @@ async function fixture(options: {
   }
   if (options.lockfile === "bun") {
     await writeFile(path.join(root, "bun.lock"), "");
+  }
+
+  for (const [relativePath, content] of Object.entries(options.files ?? {})) {
+    const filePath = path.join(root, relativePath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, content);
   }
 
   return root;

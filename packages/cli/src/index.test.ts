@@ -54,9 +54,11 @@ test("prints doctor JSON and writes lockfile", async () => {
     assert.equal(output.exitCode, 0);
     const parsed = JSON.parse(output.stdout) as {
       project: { kind: string };
+      dependencyGraph: { nodes: Array<{ packageName: string }> };
       packageIssues: Array<{ packageName: string; installedVersion: string; affectedRange: string }>;
     };
     assert.equal(parsed.project.kind, "expo-prebuild");
+    assert.ok(parsed.dependencyGraph.nodes.some(node => node.packageName === "react-native-svg"));
     assert.deepEqual(
       parsed.packageIssues.map(issue => ({
         packageName: issue.packageName,

@@ -147,6 +147,11 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
   console.log(`Expo: ${report.project.expoVersion ?? "not detected"}`);
   console.log(`React Native: ${report.project.reactNativeVersion ?? "not detected"}`);
   console.log(`Status: ${report.summary.status.toUpperCase()}`);
+  if (report.dependencyGraph) {
+    console.log(
+      `Graph: ${report.dependencyGraph.nodes.length} packages · ${report.dependencyGraph.duplicates.length} duplicates · ${report.dependencyGraph.patchedPackages.length} patched`
+    );
+  }
   console.log("");
 
   if (report.findings.length === 0) {

@@ -247,6 +247,22 @@ export interface DependencyGraphNode {
   matchingRuleIds: string[];
 }
 
+export interface DuplicateDependency {
+  packageName: string;
+  versions: string[];
+}
+
+export interface DependencyGraph {
+  nodes: DependencyGraphNode[];
+  duplicates: DuplicateDependency[];
+  duplicateReact: DuplicateDependency[];
+  duplicateReactNative: DuplicateDependency[];
+  patchedPackages: string[];
+  overrides: Record<string, string>;
+  resolutions: Record<string, string>;
+  packageExtensions: Record<string, unknown>;
+}
+
 export interface NativeGuardSnapshot {
   schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
   generatedAt: string;
@@ -376,6 +392,7 @@ export interface DoctorReport {
   };
   project: ProjectProfile;
   dependencySnapshot: DependencySnapshot;
+  dependencyGraph?: DependencyGraph;
   summary: {
     status: StabilityStatus;
     findingCounts: Record<FindingSeverity, number>;

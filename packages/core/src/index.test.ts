@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   analyzeProject,
   collectToolchainContext,
+  createDependencyGraph,
   createEnvironmentReport,
   detectPackageManager,
   detectProjectProfile,
@@ -203,6 +204,155 @@ test("detects persistent stage 2 fixtures", async () => {
   assert.equal(monorepoFixture.lockfileState?.path, "../../pnpm-lock.yaml");
 });
 
+test("builds dependency graph from npm lockfile", async () => {
+  const root = await fixture({
+    packageJson: {
+      private: true,
+      dependencies: {
+        react: "19.1.0",
+        "react-native": "0.81.0",
+        "react-native-svg": "15.11.2"
+      },
+      overrides: {
+        "react-native-svg": "15.11.2"
+      },
+      resolutions: {
+        react: "19.1.0"
+      },
+      pnpm: {
+        packageExtensions: {
+          "react-native-svg@15.11.2": {
+            peerDependencies: {
+              react: "*"
+            }
+          }
+        }
+      }
+    },
+    lockfile: "npm",
+    lockfileContent: JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            dependencies: {
+              react: "19.1.0",
+              "react-native": "0.81.0",
+              "react-native-svg": "15.11.2"
+            }
+          },
+          "node_modules/react": {
+            version: "19.1.0"
+          },
+          "node_modules/react-native": {
+            version: "0.81.0",
+            peerDependencies: {
+              react: "*"
+            }
+          },
+          "node_modules/react-native-svg": {
+            version: "15.11.2",
+            peerDependencies: {
+              "react-native": "*"
+            }
+          },
+          "node_modules/some-transitive": {
+            version: "1.0.0"
+          },
+          "node_modules/some-transitive/node_modules/react": {
+            version: "18.3.1"
+          },
+          "node_modules/some-transitive/node_modules/react-native": {
+            version: "0.80.0"
+          }
+        }
+      },
+      null,
+      2
+    ),
+    files: {
+      "patches/react-native-svg+15.11.2.patch": "diff --git a/file b/file\n"
+    }
+  });
+
+  const packageJson = {
+    dependencies: {
+      react: "19.1.0",
+      "react-native": "0.81.0",
+      "react-native-svg": "15.11.2"
+    },
+    overrides: {
+      "react-native-svg": "15.11.2"
+    },
+    resolutions: {
+      react: "19.1.0"
+    },
+    pnpm: {
+      packageExtensions: {
+        "react-native-svg@15.11.2": {
+          peerDependencies: {
+            react: "*"
+          }
+        }
+      }
+    }
+  };
+
+  const graph = await createDependencyGraph(root, packageJson, "npm");
+
+  assert.equal(graph.nodes.length, 6);
+  assert.deepEqual(graph.duplicateReact, [{ packageName: "react", versions: ["18.3.1", "19.1.0"] }]);
+  assert.deepEqual(graph.duplicateReactNative, [{ packageName: "react-native", versions: ["0.80.0", "0.81.0"] }]);
+  assert.deepEqual(graph.patchedPackages, ["react-native-svg"]);
+  assert.equal(graph.overrides["react-native-svg"], "15.11.2");
+  assert.equal(graph.resolutions.react, "19.1.0");
+  assert.ok(graph.packageExtensions["react-native-svg@15.11.2"]);
+
+  const svg = graph.nodes.find(node => node.packageName === "react-native-svg");
+  assert.equal(svg?.direct, true);
+  assert.equal(svg?.patched, true);
+  assert.equal(svg?.overridden, true);
+  assert.equal(svg?.classification, "native-module");
+
+  const nestedReactNative = graph.nodes.find(node => node.packageName === "react-native" && node.installedVersion === "0.80.0");
+  assert.deepEqual(nestedReactNative?.dependencyPath, ["some-transitive", "react-native"]);
+});
+
+test("builds dependency graph from pnpm lockfile", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      react: "19.1.0",
+      "react-native": "0.81.0"
+    },
+    lockfile: "pnpm",
+    lockfileContent: [
+      "lockfileVersion: '9.0'",
+      "packages:",
+      "  /expo@54.0.0:",
+      "    resolution: {integrity: sha512-example}",
+      "  /react@19.1.0:",
+      "    resolution: {integrity: sha512-example}",
+      "  /react@18.3.1:",
+      "    resolution: {integrity: sha512-example}",
+      "  /react-native@0.81.0:",
+      "    resolution: {integrity: sha512-example}"
+    ].join("\n")
+  });
+
+  const graph = await createDependencyGraph(root, {
+    dependencies: {
+      expo: "54.0.0",
+      react: "19.1.0",
+      "react-native": "0.81.0"
+    }
+  }, "pnpm");
+
+  assert.deepEqual(graph.duplicateReact, [{ packageName: "react", versions: ["18.3.1", "19.1.0"] }]);
+  assert.equal(graph.nodes.find(node => node.packageName === "expo")?.classification, "js-only");
+  assert.equal(graph.nodes.find(node => node.packageName === "react-native")?.classification, "native-module");
+});
+
 test("analyzes project and writes lockfile", async () => {
   const root = await fixture({
     dependencies: { expo: "54.0.0", "react-native": "0.81.0", "react-native-svg": "15.11.2" },
@@ -218,6 +368,7 @@ test("analyzes project and writes lockfile", async () => {
 
   assert.equal(report.project.kind, "expo-prebuild");
   assert.equal(report.schemaVersion, "1.0.0");
+  assert.ok(report.dependencyGraph);
   assert.ok(report.findings.length >= 1);
 
   const lockfilePath = await writeNativeGuardLockfile(report, root);
@@ -301,6 +452,7 @@ async function fixture(options: {
   packageJson?: Record<string, unknown>;
   directories?: string[];
   lockfile?: "npm" | "yarn" | "pnpm" | "bun";
+  lockfileContent?: string;
   files?: Record<string, string>;
 }): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-fixture-"));
@@ -314,13 +466,13 @@ async function fixture(options: {
   }
 
   if (options.lockfile === "npm") {
-    await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+    await writeFile(path.join(root, "package-lock.json"), options.lockfileContent ?? JSON.stringify({ lockfileVersion: 3, packages: {} }));
   }
   if (options.lockfile === "yarn") {
-    await writeFile(path.join(root, "yarn.lock"), "");
+    await writeFile(path.join(root, "yarn.lock"), options.lockfileContent ?? "");
   }
   if (options.lockfile === "pnpm") {
-    await writeFile(path.join(root, "pnpm-lock.yaml"), "");
+    await writeFile(path.join(root, "pnpm-lock.yaml"), options.lockfileContent ?? "");
   }
   if (options.lockfile === "bun") {
     await writeFile(path.join(root, "bun.lock"), "");

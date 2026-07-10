@@ -5,6 +5,8 @@ import {
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
   type CompatibilityRule,
+  type DependencyGraph,
+  type DependencyGraphNode,
   type DependencySnapshot,
   type DoctorReport,
   type Finding,
@@ -38,6 +40,13 @@ interface PackageJson {
   packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  overrides?: Record<string, string>;
+  resolutions?: Record<string, string>;
+  pnpm?: {
+    overrides?: Record<string, string>;
+    packageExtensions?: Record<string, unknown>;
+    patchedDependencies?: Record<string, string>;
+  };
   workspaces?: string[] | { packages?: string[] };
   expo?: {
     newArchEnabled?: boolean;
@@ -49,6 +58,7 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const packageJson = await readPackageJson(root);
   const profile = await detectProjectProfile(root, packageJson);
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
+  const dependencyGraph = await createDependencyGraph(root, packageJson, profile.packageManager);
   const findings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
   const summary = summarizeFindings(findings, profile.packageManager);
   const packageIssues = findings.flatMap(finding => (finding.issue ? [finding.issue] : []));
@@ -62,6 +72,7 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     },
     project: profile,
     dependencySnapshot,
+    dependencyGraph,
     summary,
     packageIssues,
     findings,
@@ -228,6 +239,56 @@ export async function collectToolchainContext(
     ...(kotlinVersion ? { kotlinVersion } : {}),
     ...(androidSdk ? { androidSdk } : {}),
     missingContext
+  };
+}
+
+export async function createDependencyGraph(
+  root: string,
+  packageJson: PackageJson,
+  packageManager?: PackageManagerName
+): Promise<DependencyGraph> {
+  const detectedPackageManager = packageManager ?? await detectPackageManager(root);
+  const declaredDependencies = {
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies
+  };
+  const directNames = new Set(Object.keys(declaredDependencies));
+  const patchedPackages = await detectPatchedPackages(root, packageJson);
+  const overrides = {
+    ...(packageJson.overrides ?? {}),
+    ...(packageJson.pnpm?.overrides ?? {})
+  };
+  const resolutions = packageJson.resolutions ?? {};
+  const packageExtensions = packageJson.pnpm?.packageExtensions ?? {};
+  const lockfileNodes = await readGraphNodesFromLockfile(root, detectedPackageManager, declaredDependencies, patchedPackages, overrides);
+  const lockfileNodeNames = new Set(lockfileNodes.map(node => node.packageName));
+  const manifestOnlyNodes = Object.entries(declaredDependencies)
+    .filter(([packageName]) => !lockfileNodeNames.has(packageName))
+    .map(([packageName, declaredRange]): DependencyGraphNode => createGraphNode({
+      packageName,
+      installedVersion: declaredRange,
+      declaredRange,
+      direct: true,
+      dependencyPath: [packageName],
+      packageManager: detectedPackageManager,
+      patchedPackages,
+      overrides
+    }));
+  const nodes = [...lockfileNodes, ...manifestOnlyNodes].sort((left, right) => {
+    if (left.packageName === right.packageName) return left.installedVersion.localeCompare(right.installedVersion);
+    return left.packageName.localeCompare(right.packageName);
+  });
+  const duplicates = findDuplicateDependencies(nodes);
+
+  return {
+    nodes,
+    duplicates,
+    duplicateReact: duplicates.filter(duplicate => duplicate.packageName === "react"),
+    duplicateReactNative: duplicates.filter(duplicate => duplicate.packageName === "react-native"),
+    patchedPackages,
+    overrides,
+    resolutions,
+    packageExtensions
   };
 }
 
@@ -504,6 +565,266 @@ function countLockfilePackages(raw: string, lockfileName: string): number {
     return raw.split("\n").filter(line => /^[^#\s][^:]+:/.test(line)).length;
   }
   return 0;
+}
+
+async function readGraphNodesFromLockfile(
+  root: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): Promise<DependencyGraphNode[]> {
+  const lockfile = await lockfilePathFor(root, packageManager);
+  if (!lockfile) return [];
+  const raw = await readTextIfExists(lockfile.absolute);
+  if (!raw) return [];
+
+  if (lockfile.relative.endsWith("package-lock.json")) {
+    return readNpmGraphNodes(raw, packageManager, declaredDependencies, patchedPackages, overrides);
+  }
+  if (lockfile.relative.endsWith("pnpm-lock.yaml")) {
+    return readPnpmGraphNodes(raw, packageManager, declaredDependencies, patchedPackages, overrides);
+  }
+  if (lockfile.relative.endsWith("yarn.lock")) {
+    return readYarnGraphNodes(raw, packageManager, declaredDependencies, patchedPackages, overrides);
+  }
+
+  return [];
+}
+
+function readNpmGraphNodes(
+  raw: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): DependencyGraphNode[] {
+  const parsed = JSON.parse(raw) as {
+    packages?: Record<string, {
+      version?: string;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    }>;
+  };
+  const packages = parsed.packages ?? {};
+  const rootDependencies = {
+    ...(packages[""]?.dependencies ?? {}),
+    ...(packages[""]?.devDependencies ?? {}),
+    ...declaredDependencies
+  };
+
+  return Object.entries(packages)
+    .filter(([packagePath]) => packagePath.startsWith("node_modules/"))
+    .map(([packagePath, metadata]): DependencyGraphNode | undefined => {
+      const packageName = packageNameFromNodeModulesPath(packagePath);
+      if (!packageName || !metadata.version) return undefined;
+      return createGraphNode({
+        packageName,
+        installedVersion: metadata.version,
+        ...(rootDependencies[packageName] ? { declaredRange: rootDependencies[packageName] } : {}),
+        direct: packageName in rootDependencies,
+        dependencyPath: dependencyPathFromPackagePath(packagePath),
+        lockfileSource: "package-lock.json",
+        packageManager,
+        patchedPackages,
+        overrides,
+        peerDependencyMismatches: findPeerDependencyMismatches(metadata.peerDependencies ?? {}, rootDependencies)
+      });
+    })
+    .filter((node): node is DependencyGraphNode => Boolean(node));
+}
+
+function readPnpmGraphNodes(
+  raw: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): DependencyGraphNode[] {
+  const nodes: DependencyGraphNode[] = [];
+  const directNames = new Set(Object.keys(declaredDependencies));
+  for (const line of raw.split("\n")) {
+    const match = line.match(/^\s{2}\/((?:@[^/]+\/)?[^/@:]+)@([^:]+):/);
+    if (!match?.[1] || !match[2]) continue;
+    const packageName = match[1];
+    nodes.push(createGraphNode({
+      packageName,
+      installedVersion: match[2],
+      ...(declaredDependencies[packageName] ? { declaredRange: declaredDependencies[packageName] } : {}),
+      direct: directNames.has(packageName),
+      dependencyPath: [packageName],
+      lockfileSource: "pnpm-lock.yaml",
+      packageManager,
+      patchedPackages,
+      overrides
+    }));
+  }
+  return nodes;
+}
+
+function readYarnGraphNodes(
+  raw: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): DependencyGraphNode[] {
+  const nodes: DependencyGraphNode[] = [];
+  let currentPackageName: string | undefined;
+  for (const line of raw.split("\n")) {
+    const keyMatch = line.match(/^"?((?:@[^/]+\/)?[^@":]+)@[^:]+:$/);
+    if (keyMatch?.[1]) {
+      currentPackageName = keyMatch[1];
+      continue;
+    }
+    const versionMatch = line.match(/^\s+version\s+"([^"]+)"/);
+    if (currentPackageName && versionMatch?.[1]) {
+      nodes.push(createGraphNode({
+        packageName: currentPackageName,
+        installedVersion: versionMatch[1],
+        ...(declaredDependencies[currentPackageName] ? { declaredRange: declaredDependencies[currentPackageName] } : {}),
+        direct: currentPackageName in declaredDependencies,
+        dependencyPath: [currentPackageName],
+        lockfileSource: "yarn.lock",
+        packageManager,
+        patchedPackages,
+        overrides
+      }));
+      currentPackageName = undefined;
+    }
+  }
+  return nodes;
+}
+
+function createGraphNode(options: {
+  packageName: string;
+  installedVersion: string;
+  declaredRange?: string;
+  direct: boolean;
+  dependencyPath: string[];
+  lockfileSource?: string;
+  packageManager: PackageManagerName;
+  patchedPackages: string[];
+  overrides: Record<string, string>;
+  peerDependencyMismatches?: string[];
+}): DependencyGraphNode {
+  return {
+    packageName: options.packageName,
+    installedVersion: options.installedVersion,
+    ...(options.declaredRange ? { declaredRange: options.declaredRange } : {}),
+    direct: options.direct,
+    dependencyPath: options.dependencyPath,
+    ...(options.lockfileSource ? { lockfileSource: options.lockfileSource } : {}),
+    packageManager: options.packageManager,
+    classification: classifyPackage(options.packageName),
+    patched: options.patchedPackages.includes(options.packageName),
+    overridden: options.packageName in options.overrides,
+    peerDependencyMismatches: options.peerDependencyMismatches ?? [],
+    matchingRuleIds: []
+  };
+}
+
+async function detectPatchedPackages(root: string, packageJson: PackageJson): Promise<string[]> {
+  const patched = new Set(Object.keys(packageJson.pnpm?.patchedDependencies ?? {}).map(packageNameFromPatchSpecifier));
+  const patchesDir = path.join(root, "patches");
+  const entries = await readDirectoryNames(patchesDir);
+  for (const entry of entries) {
+    if (!entry.endsWith(".patch")) continue;
+    patched.add(packageNameFromPatchFile(entry));
+  }
+  return Array.from(patched).filter(Boolean).sort();
+}
+
+async function readDirectoryNames(directory: string): Promise<string[]> {
+  try {
+    const { readdir } = await import("node:fs/promises");
+    return await readdir(directory);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return [];
+    throw error;
+  }
+}
+
+function packageNameFromPatchSpecifier(specifier: string): string {
+  return specifier.replace(/@npm:.+$/, "").replace(/@patch:.+$/, "");
+}
+
+function packageNameFromPatchFile(fileName: string): string {
+  const withoutPatch = fileName.replace(/\.patch$/, "");
+  if (withoutPatch.startsWith("@")) {
+    const segments = withoutPatch.split("+");
+    return `${segments[0]}/${segments[1] ?? ""}`;
+  }
+  return withoutPatch.split("+")[0] ?? withoutPatch;
+}
+
+function packageNameFromNodeModulesPath(packagePath: string): string | undefined {
+  const segments = packagePath.split("/").filter(Boolean);
+  const nodeModulesIndex = segments.lastIndexOf("node_modules");
+  const first = segments[nodeModulesIndex + 1];
+  if (!first) return undefined;
+  if (first.startsWith("@")) {
+    const second = segments[nodeModulesIndex + 2];
+    return second ? `${first}/${second}` : undefined;
+  }
+  return first;
+}
+
+function dependencyPathFromPackagePath(packagePath: string): string[] {
+  const result: string[] = [];
+  const segments = packagePath.split("/").filter(Boolean);
+  for (let index = 0; index < segments.length; index += 1) {
+    if (segments[index] !== "node_modules") continue;
+    const first = segments[index + 1];
+    if (!first) continue;
+    if (first.startsWith("@")) {
+      const second = segments[index + 2];
+      if (second) result.push(`${first}/${second}`);
+      index += 2;
+    } else {
+      result.push(first);
+      index += 1;
+    }
+  }
+  return result;
+}
+
+function classifyPackage(packageName: string): DependencyGraphNode["classification"] {
+  if (packageName === "expo-modules-core" || packageName.startsWith("expo-")) return "expo-module";
+  if (
+    packageName === "react-native" ||
+    packageName.startsWith("react-native-") ||
+    packageName.startsWith("@react-native/") ||
+    packageName.startsWith("@react-native-")
+  ) {
+    return "native-module";
+  }
+  if (packageName.startsWith("@")) return "unknown";
+  return "js-only";
+}
+
+function findPeerDependencyMismatches(
+  peerDependencies: Record<string, string>,
+  rootDependencies: Record<string, string>
+): string[] {
+  return Object.entries(peerDependencies)
+    .filter(([packageName]) => !(packageName in rootDependencies))
+    .map(([packageName, range]) => `${packageName}@${range}`);
+}
+
+function findDuplicateDependencies(nodes: DependencyGraphNode[]): Array<{ packageName: string; versions: string[] }> {
+  const versionsByPackage = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    const versions = versionsByPackage.get(node.packageName) ?? new Set<string>();
+    versions.add(node.installedVersion);
+    versionsByPackage.set(node.packageName, versions);
+  }
+
+  return Array.from(versionsByPackage.entries())
+    .map(([packageName, versions]) => ({ packageName, versions: Array.from(versions).sort() }))
+    .filter(duplicate => duplicate.versions.length > 1)
+    .sort((left, right) => left.packageName.localeCompare(right.packageName));
 }
 
 async function readJsonFile<T>(filePath: string): Promise<T | undefined> {

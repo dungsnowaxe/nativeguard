@@ -2,6 +2,7 @@ import { access, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
+  CONFIG_SCHEMA_VERSION,
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
   type CompatibilityRule,
@@ -10,15 +11,19 @@ import {
   type DependencySnapshot,
   type DoctorReport,
   type Finding,
+  type LocalException,
   type NativeGuardEnvironmentReport,
+  type NativeGuardConfig,
   type NativeGuardLockfile,
   type PackageIssue,
   type PackageManagerName,
+  type PolicyStatus,
   type ProjectKind,
   type ProjectProfile,
   type StabilityStatus,
   type ToolchainContext,
-  validateLockfile
+  validateLockfile,
+  validateNativeGuardConfig
 } from "@nativeguard/schema";
 
 export class NativeGuardError extends Error {
@@ -33,6 +38,8 @@ export class NativeGuardError extends Error {
 export interface AnalyzeOptions {
   rootDir: string;
   cliVersion: string;
+  configPath?: string;
+  ci?: boolean;
   now?: Date;
 }
 
@@ -55,17 +62,24 @@ interface PackageJson {
 
 export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorReport> {
   const root = path.resolve(options.rootDir);
+  const now = options.now ?? new Date();
   const packageJson = await readPackageJson(root);
+  const config = await loadNativeGuardConfig(root, options.configPath);
   const profile = await detectProjectProfile(root, packageJson);
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
   const dependencyGraph = await createDependencyGraph(root, packageJson, profile.packageManager);
-  const findings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
-  const summary = summarizeFindings(findings, profile.packageManager);
-  const packageIssues = findings.flatMap(finding => (finding.issue ? [finding.issue] : []));
+  const rawFindings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
+  const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, now);
+  const findings = applyActiveExceptions(rawFindings, exceptionState.active);
+  const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot);
+  const allFindings = [...findings, ...staleExceptionFindings];
+  const summary = summarizeFindings(allFindings, profile.packageManager);
+  const packageIssues = allFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
+  const exitDecision = evaluatePolicyExit(allFindings, exceptionState.stale, config, Boolean(options.ci), summary.status);
 
   return {
     schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
-    generatedAt: (options.now ?? new Date()).toISOString(),
+    generatedAt: now.toISOString(),
     nativeguard: {
       cliVersion: options.cliVersion,
       rulesPackage: RULES_PACKAGE
@@ -74,8 +88,14 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     dependencySnapshot,
     dependencyGraph,
     summary,
+    policy: {
+      ci: config.ci,
+      activeExceptions: exceptionState.active,
+      staleExceptions: exceptionState.stale,
+      exitDecision
+    },
     packageIssues,
-    findings,
+    findings: allFindings,
     nextActions: createNextActions(summary.status, profile.packageManager)
   };
 }
@@ -310,6 +330,196 @@ async function readPackageJson(root: string): Promise<PackageJson> {
     }
     throw error;
   }
+}
+
+export async function loadNativeGuardConfig(root: string, configPath?: string): Promise<NativeGuardConfig> {
+  const defaultConfig = createDefaultConfig();
+  const resolvedConfigPath = configPath
+    ? path.resolve(root, configPath)
+    : path.join(root, "nativeguard.config.json");
+  const raw = await readTextIfExists(resolvedConfigPath);
+
+  if (!raw) {
+    if (configPath) {
+      throw new NativeGuardError(`NativeGuard config was not found at ${configPath}.`, "MISSING_CONFIG");
+    }
+    return defaultConfig;
+  }
+
+  const parsed = JSON.parse(raw) as unknown;
+  const validation = validateNativeGuardConfig(parsed);
+  if (!validation.valid) {
+    throw new NativeGuardError(
+      `NativeGuard config is invalid: ${validation.errors.join(", ")}`,
+      "INVALID_CONFIG"
+    );
+  }
+
+  const config = parsed as NativeGuardConfig;
+  return {
+    ...defaultConfig,
+    ...config,
+    rules: {
+      ...defaultConfig.rules,
+      ...config.rules
+    },
+    ci: {
+      ...defaultConfig.ci,
+      ...config.ci
+    },
+    redaction: {
+      ...defaultConfig.redaction,
+      ...config.redaction
+    },
+    exceptions: config.exceptions
+  };
+}
+
+function createDefaultConfig(): NativeGuardConfig {
+  return {
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    rules: {
+      source: "@nativeguard/rules"
+    },
+    ci: {
+      failOn: ["red"],
+      warnOn: ["yellow", "unknown", "stale-exception"]
+    },
+    exceptions: [],
+    redaction: {
+      hidePrivateScopes: true,
+      hideAbsolutePaths: true
+    }
+  };
+}
+
+function evaluateExceptions(
+  exceptions: LocalException[],
+  snapshot: DependencySnapshot,
+  now: Date
+): { active: LocalException[]; stale: LocalException[] } {
+  const allDependencies = {
+    ...snapshot.dependencies,
+    ...snapshot.devDependencies
+  };
+  const active: LocalException[] = [];
+  const stale: LocalException[] = [];
+
+  for (const exception of exceptions) {
+    const installedVersion = allDependencies[exception.packageName];
+    if (!installedVersion || !versionMatchesRange(installedVersion, exception.allowedVersions)) continue;
+    if (isExceptionExpired(exception, now)) {
+      stale.push(exception);
+    } else {
+      active.push(exception);
+    }
+  }
+
+  return { active, stale };
+}
+
+function applyActiveExceptions(findings: Finding[], activeExceptions: LocalException[]): Finding[] {
+  return findings.map(finding => {
+    const exception = activeExceptions.find(candidate => candidate.packageName === finding.packageName);
+    if (!exception) return finding;
+
+    return {
+      ...finding,
+      severity: finding.severity === "error" ? "warning" : finding.severity,
+      status: "accepted-exception",
+      detail: `${finding.detail} Local exception approved by ${exception.owner} until ${exception.expiresAt}: ${exception.reason}`,
+      remediation: [
+        ...finding.remediation,
+        {
+          type: "manual-check",
+          packageName: exception.packageName,
+          note: `Required verification for exception: ${exception.requiredVerification.join(", ")}`
+        }
+      ]
+    };
+  });
+}
+
+function createStaleExceptionFindings(
+  staleExceptions: LocalException[],
+  snapshot: DependencySnapshot
+): Finding[] {
+  const allDependencies = {
+    ...snapshot.dependencies,
+    ...snapshot.devDependencies
+  };
+
+  return staleExceptions.map(exception => ({
+    id: `finding-stale-exception-${exception.packageName}`,
+    packageName: exception.packageName,
+    severity: "warning",
+    status: "accepted-exception",
+    title: `Exception for ${exception.packageName} is stale`,
+    detail: `${exception.packageName}@${allDependencies[exception.packageName] ?? "unknown"} still matches an exception that expired on ${exception.expiresAt}.`,
+    confidence: "high",
+    evidence: [
+      {
+        type: "manual",
+        summary: exception.reason,
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "manual-check",
+        packageName: exception.packageName,
+        note: `Renew or remove the exception owned by ${exception.owner}.`
+      }
+    ]
+  }));
+}
+
+function evaluatePolicyExit(
+  findings: Finding[],
+  staleExceptions: LocalException[],
+  config: NativeGuardConfig,
+  ci: boolean,
+  summaryStatus: StabilityStatus
+): { exitCode: 0 | 1; reason: string } {
+  if (!ci) {
+    return {
+      exitCode: summaryStatus === "risky" ? 1 : 0,
+      reason: summaryStatus === "risky" ? "Risky findings detected." : "No local blocking policy was applied."
+    };
+  }
+
+  const policyStatuses = new Set(findings.map(findingToPolicyStatus));
+  if (staleExceptions.length > 0) {
+    policyStatuses.add("stale-exception");
+  }
+
+  for (const blockedStatus of config.ci.failOn) {
+    if (policyStatuses.has(blockedStatus)) {
+      return {
+        exitCode: 1,
+        reason: `CI policy failed on ${blockedStatus}.`
+      };
+    }
+  }
+
+  return {
+    exitCode: 0,
+    reason: "CI policy found no blocking statuses."
+  };
+}
+
+function findingToPolicyStatus(finding: Finding): PolicyStatus {
+  if (finding.id.startsWith("finding-stale-exception-")) return "yellow";
+  if (finding.status === "risky" || finding.severity === "error") return "red";
+  if (finding.status === "accepted-exception") return "blue";
+  if (finding.status === "unsupported") return "unknown";
+  if (finding.severity === "warning") return "yellow";
+  return "green";
+}
+
+function isExceptionExpired(exception: LocalException, now: Date): boolean {
+  const expiresAt = Date.parse(exception.expiresAt);
+  return Number.isNaN(expiresAt) || expiresAt < now.getTime();
 }
 
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {

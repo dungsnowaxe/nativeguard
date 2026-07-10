@@ -397,6 +397,15 @@ export interface DoctorReport {
     status: StabilityStatus;
     findingCounts: Record<FindingSeverity, number>;
   };
+  policy?: {
+    ci: NativeGuardConfig["ci"];
+    activeExceptions: LocalException[];
+    staleExceptions: LocalException[];
+    exitDecision: {
+      exitCode: 0 | 1;
+      reason: string;
+    };
+  };
   packageIssues: PackageIssue[];
   findings: Finding[];
   nextActions: string[];

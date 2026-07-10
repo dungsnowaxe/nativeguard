@@ -11,6 +11,7 @@ import {
   createEnvironmentReport,
   detectPackageManager,
   detectProjectProfile,
+  loadNativeGuardConfig,
   readNativeGuardLockfile,
   writeNativeGuardLockfile
 } from "./index.js";
@@ -351,6 +352,124 @@ test("builds dependency graph from pnpm lockfile", async () => {
   assert.deepEqual(graph.duplicateReact, [{ packageName: "react", versions: ["18.3.1", "19.1.0"] }]);
   assert.equal(graph.nodes.find(node => node.packageName === "expo")?.classification, "js-only");
   assert.equal(graph.nodes.find(node => node.packageName === "react-native")?.classification, "native-module");
+});
+
+test("loads nativeguard config", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+    lockfile: "npm",
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules", version: "2026.07.11" },
+          ci: { failOn: ["red", "stale-exception"], warnOn: ["yellow", "unknown"] },
+          exceptions: [],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const config = await loadNativeGuardConfig(root);
+
+  assert.deepEqual(config.ci.failOn, ["red", "stale-exception"]);
+  assert.equal(config.rules.version, "2026.07.11");
+});
+
+test("applies active exceptions to matching findings", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-pager-view": "6.9.1"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm",
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules" },
+          ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+          exceptions: [
+            {
+              packageName: "react-native-pager-view",
+              allowedVersions: "6.9.1",
+              reason: "Temporary release exception while Android smoke tests are passing.",
+              owner: "@mobile-platform",
+              expiresAt: "2026-08-01",
+              requiredVerification: ["android-release-build"]
+            }
+          ],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const report = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  const pagerFinding = report.findings.find(finding => finding.packageName === "react-native-pager-view");
+  assert.equal(pagerFinding?.status, "accepted-exception");
+  assert.equal(pagerFinding?.severity, "warning");
+  assert.equal(report.policy?.activeExceptions.length, 1);
+  assert.equal(report.policy?.staleExceptions.length, 0);
+  assert.equal(report.summary.status, "accepted-exception");
+});
+
+test("reports stale exceptions and applies CI policy", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-pager-view": "6.9.1"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm",
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules" },
+          ci: { failOn: ["stale-exception"], warnOn: ["red", "yellow", "unknown"] },
+          exceptions: [
+            {
+              packageName: "react-native-pager-view",
+              allowedVersions: "6.9.1",
+              reason: "Expired release exception.",
+              owner: "@mobile-platform",
+              expiresAt: "2026-01-01",
+              requiredVerification: ["android-release-build"]
+            }
+          ],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const report = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    ci: true,
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  assert.equal(report.policy?.staleExceptions.length, 1);
+  assert.equal(report.policy?.exitDecision.exitCode, 1);
+  assert.match(report.policy?.exitDecision.reason ?? "", /stale-exception/);
+  assert.ok(report.findings.some(finding => finding.id === "finding-stale-exception-react-native-pager-view"));
 });
 
 test("analyzes project and writes lockfile", async () => {

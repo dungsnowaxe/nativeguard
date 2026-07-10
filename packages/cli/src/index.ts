@@ -80,11 +80,15 @@ async function runEnvReport(args: string[]): Promise<number> {
 async function runDoctor(args: string[]): Promise<number> {
   const json = args.includes("--json");
   const writeLockfile = args.includes("--write-lockfile");
+  const ci = args.includes("--ci");
+  const configPath = readFlagValue(args, "--config");
 
   try {
     const report = await analyzeProject({
       rootDir: process.cwd(),
-      cliVersion: CLI_VERSION
+      cliVersion: CLI_VERSION,
+      ...(configPath ? { configPath } : {}),
+      ci
     });
 
     const validation = validateDoctorReport(report);
@@ -105,7 +109,7 @@ async function runDoctor(args: string[]): Promise<number> {
       printReport(report, writeLockfile);
     }
 
-    return report.summary.status === "risky" ? 1 : 0;
+    return ci ? report.policy?.exitDecision.exitCode ?? 1 : report.summary.status === "risky" ? 1 : 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (json) {
@@ -134,7 +138,7 @@ function printHelp(): void {
 
 Usage:
   nativeguard --version
-  nativeguard doctor [--json] [--write-lockfile]
+  nativeguard doctor [--json] [--write-lockfile] [--ci] [--config <path>]
   nativeguard env-report [--json]
 `);
 }
@@ -151,6 +155,9 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
     console.log(
       `Graph: ${report.dependencyGraph.nodes.length} packages · ${report.dependencyGraph.duplicates.length} duplicates · ${report.dependencyGraph.patchedPackages.length} patched`
     );
+  }
+  if (report.policy) {
+    console.log(`Policy: ${report.policy.exitDecision.reason}`);
   }
   console.log("");
 
@@ -174,6 +181,12 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
     console.log("");
     console.log("Wrote nativeguard-lock.json");
   }
+}
+
+function readFlagValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index === -1) return undefined;
+  return args[index + 1];
 }
 
 function printEnvironmentReport(report: Awaited<ReturnType<typeof createEnvironmentReport>>): void {

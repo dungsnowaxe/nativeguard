@@ -117,6 +117,56 @@ test("prints redacted environment report JSON", async () => {
   }
 });
 
+test("uses CI policy exit code from config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-ci-policy-"));
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        dependencies: {
+          expo: "54.0.0",
+          "react-native": "0.81.0",
+          "react-native-pager-view": "6.9.1"
+        }
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await mkdir(path.join(root, "ios"));
+  await mkdir(path.join(root, "android"));
+  await writeFile(
+    path.join(root, "nativeguard.config.json"),
+    JSON.stringify(
+      {
+        schemaVersion: "1.0.0",
+        rules: { source: "@nativeguard/rules" },
+        ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+        exceptions: [],
+        redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+      },
+      null,
+      2
+    )
+  );
+
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const output = await captureStdout(() => main(["doctor", "--json", "--ci", "--config", "nativeguard.config.json"]));
+    assert.equal(output.exitCode, 1);
+    const parsed = JSON.parse(output.stdout) as {
+      policy: { exitDecision: { exitCode: number; reason: string } };
+    };
+    assert.equal(parsed.policy.exitDecision.exitCode, 1);
+    assert.match(parsed.policy.exitDecision.reason, /red/);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";

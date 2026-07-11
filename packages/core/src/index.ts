@@ -6,6 +6,7 @@ import {
   CONFIG_SCHEMA_VERSION,
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
+  PR_REVIEW_SCHEMA_VERSION,
   SNAPSHOT_SCHEMA_VERSION,
   type CompatibilityRule,
   type DependencyGraph,
@@ -22,11 +23,14 @@ import {
   type PackageExplanation,
   type PackageManagerName,
   type PolicyStatus,
+  type PrReviewReport,
   type ProjectKind,
   type ProjectProfile,
+  type RecommendedAction,
   type SnapshotComparison,
   type StabilityStatus,
   type ToolchainContext,
+  type VerificationType,
   validateLockfile,
   validateNativeGuardSnapshot,
   validateNativeGuardConfig
@@ -288,6 +292,35 @@ export function compareNativeGuardSnapshots(
     changedPackageVersions: changes.filter(change => change.changeType === "changed"),
     newDuplicateReact: headDuplicateReact,
     newDuplicateReactNative: headDuplicateReactNative
+  };
+}
+
+export function createPrReviewReportFromSnapshots(
+  base: NativeGuardSnapshot,
+  head: NativeGuardSnapshot,
+  now: Date = new Date()
+): PrReviewReport {
+  const comparison = compareNativeGuardSnapshots(base, head);
+  const changedNodes = changedNodesFromComparison(head, comparison);
+  const newRisks = [
+    ...duplicateFindings("react", comparison.newDuplicateReact),
+    ...duplicateFindings("react-native", comparison.newDuplicateReactNative)
+  ];
+  const requiredActions = createPrRequiredActions(changedNodes, newRisks.length);
+  const verificationChecklist = createPrVerificationChecklist(changedNodes, newRisks.length);
+
+  return {
+    schemaVersion: PR_REVIEW_SCHEMA_VERSION,
+    generatedAt: now.toISOString(),
+    status: newRisks.length > 0 ? "red" : comparison.changedPackages.length > 0 ? "yellow" : "green",
+    project: head.project,
+    changedPackages: changedNodes,
+    newRisks,
+    knownExceptions: head.exceptions,
+    staleExceptions: staleSnapshotExceptions(head.exceptions, now),
+    requiredActions,
+    verificationChecklist,
+    evidence: []
   };
 }
 
@@ -1263,6 +1296,83 @@ function duplicateSet(nodes: DependencyGraphNode[], packageName: string): Set<st
   return new Set(duplicatesForPackage(nodes, packageName).map(duplicate => duplicate.versions.join("|")));
 }
 
+function changedNodesFromComparison(
+  head: NativeGuardSnapshot,
+  comparison: SnapshotComparison
+): DependencyGraphNode[] {
+  const changedPackageNames = new Set(comparison.changedPackages.map(change => change.packageName));
+  return head.dependencyNodes
+    .filter(node => changedPackageNames.has(node.packageName))
+    .sort((left, right) => left.packageName.localeCompare(right.packageName));
+}
+
+function duplicateFindings(
+  packageName: "react" | "react-native",
+  duplicates: Array<{ packageName: string; versions: string[] }>
+): PrReviewReport["newRisks"] {
+  return duplicates.map(duplicate => ({
+    id: `pr-risk-duplicate-${packageName}`,
+    packageName,
+    severity: "error",
+    status: "red",
+    title: `Duplicate ${packageName} versions introduced`,
+    detail: `${packageName} has multiple versions in the head graph: ${duplicate.versions.join(", ")}.`,
+    affectedContext: { projectKinds: ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"] },
+    confidence: "high",
+    evidence: [],
+    recommendedActions: [
+      {
+        type: "manual-verification",
+        packageName,
+        note: `Resolve duplicate ${packageName} versions before merging.`
+      }
+    ],
+    requiredVerification: ["manual"]
+  }));
+}
+
+function createPrRequiredActions(
+  changedNodes: DependencyGraphNode[],
+  riskCount: number
+): RecommendedAction[] {
+  const actions: RecommendedAction[] = [];
+  if (riskCount > 0) {
+    actions.push({
+      type: "manual-verification",
+      note: "Review new NativeGuard risks before merging this dependency change.",
+      requiresApproval: true
+    });
+  }
+  if (changedNodes.some(node => node.classification === "native-module" || node.classification === "expo-module")) {
+    actions.push({
+      type: "manual-verification",
+      note: "Run native build verification for changed native dependencies.",
+      requiresApproval: false
+    });
+  }
+  return actions;
+}
+
+function createPrVerificationChecklist(
+  changedNodes: DependencyGraphNode[],
+  riskCount: number
+): VerificationType[] {
+  const verification = new Set<VerificationType>();
+  if (changedNodes.some(node => node.classification === "native-module" || node.classification === "expo-module")) {
+    verification.add("expo-doctor");
+    verification.add("android-build");
+    verification.add("ios-build");
+  }
+  if (riskCount > 0) {
+    verification.add("manual");
+  }
+  return Array.from(verification);
+}
+
+function staleSnapshotExceptions(exceptions: LocalException[], now: Date): LocalException[] {
+  return exceptions.filter(exception => isExceptionExpired(exception, now));
+}
+
 function fingerprint(value: unknown): string {
   return createHash("sha256")
     .update(stableStringify(value))
@@ -1567,6 +1677,7 @@ export type {
   NativeGuardSnapshot,
   PackageExplanation,
   PackageManagerName,
+  PrReviewReport,
   ProjectKind,
   ProjectProfile,
   SnapshotComparison,

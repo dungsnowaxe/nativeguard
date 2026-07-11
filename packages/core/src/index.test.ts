@@ -11,6 +11,7 @@ import {
   createDependencyGraph,
   createEnvironmentReport,
   createNativeGuardSnapshot,
+  createPrReviewReportFromSnapshots,
   detectPackageManager,
   detectProjectProfile,
   explainPackage,
@@ -628,6 +629,112 @@ test("creates, writes, reads, and compares snapshots", async () => {
       }
     ]
   );
+});
+
+test("creates PR review reports from snapshot changes and duplicate runtime risks", async () => {
+  const baseRoot = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      react: "19.1.0",
+      "react-native": "0.81.0"
+    },
+    lockfile: "npm",
+    lockfileContent: JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            dependencies: {
+              expo: "54.0.0",
+              react: "19.1.0",
+              "react-native": "0.81.0"
+            }
+          },
+          "node_modules/expo": { version: "54.0.0" },
+          "node_modules/react": { version: "19.1.0" },
+          "node_modules/react-native": { version: "0.81.0" }
+        }
+      },
+      null,
+      2
+    )
+  });
+  const headRoot = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      react: "19.1.0",
+      "react-native": "0.81.0"
+    },
+    lockfile: "npm",
+    lockfileContent: JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            dependencies: {
+              expo: "54.0.0",
+              react: "19.1.0",
+              "react-native": "0.81.0"
+            }
+          },
+          "node_modules/expo": { version: "54.0.0" },
+          "node_modules/react": { version: "19.1.0" },
+          "node_modules/react-native": { version: "0.81.0" },
+          "node_modules/some-transitive": { version: "1.0.0" },
+          "node_modules/some-transitive/node_modules/react": { version: "18.3.1" },
+          "node_modules/some-transitive/node_modules/react-native": { version: "0.80.0" }
+        }
+      },
+      null,
+      2
+    ),
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules" },
+          ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+          exceptions: [
+            {
+              packageName: "react-native",
+              allowedVersions: "0.81.0",
+              reason: "Expired manual verification window.",
+              owner: "@mobile-platform",
+              expiresAt: "2026-01-01",
+              requiredVerification: ["android-build"]
+            }
+          ],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const base = await createNativeGuardSnapshot({
+    rootDir: baseRoot,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+  const head = await createNativeGuardSnapshot({
+    rootDir: headRoot,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-12T00:00:00.000Z")
+  });
+
+  const report = createPrReviewReportFromSnapshots(base, head, new Date("2026-07-13T00:00:00.000Z"));
+
+  assert.equal(report.status, "red");
+  assert.deepEqual(
+    report.newRisks.map(risk => risk.id).sort(),
+    ["pr-risk-duplicate-react", "pr-risk-duplicate-react-native"]
+  );
+  assert.ok(report.changedPackages.some(node => node.packageName === "react" && node.installedVersion === "18.3.1"));
+  assert.ok(report.changedPackages.some(node => node.packageName === "react-native" && node.installedVersion === "0.80.0"));
+  assert.deepEqual(report.staleExceptions.map(exception => exception.packageName), ["react-native"]);
+  assert.deepEqual(report.verificationChecklist, ["expo-doctor", "android-build", "ios-build", "manual"]);
+  assert.ok(report.requiredActions.some(action => action.requiresApproval === true));
 });
 
 test("analyzes project and writes lockfile", async () => {

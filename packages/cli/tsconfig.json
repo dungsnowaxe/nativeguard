@@ -9,7 +9,8 @@
   "references": [
     { "path": "../schema" },
     { "path": "../rules" },
-    { "path": "../core" }
+    { "path": "../core" },
+    { "path": "../github-action" }
   ],
   "include": ["src/**/*.ts"]
 }

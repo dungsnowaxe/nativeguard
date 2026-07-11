@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@nativeguard/core": "workspace:*",
+    "@nativeguard/github-action": "workspace:*",
     "@nativeguard/schema": "workspace:*"
   }
 }

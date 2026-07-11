@@ -207,6 +207,69 @@ test("prints snapshots and compares snapshot files", async () => {
   }
 });
 
+test("prints PR review reports from snapshot files", async () => {
+  const baseRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-base-review-pr-"));
+  const headRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-head-review-pr-"));
+  await writeFile(
+    path.join(baseRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0" } }, null, 2)
+  );
+  await writeFile(path.join(baseRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await writeFile(
+    path.join(headRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0", "react-native-svg": "15.11.2" } }, null, 2)
+  );
+  await writeFile(path.join(headRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+
+  const baseSnapshotPath = path.join(baseRoot, "snapshot.json");
+  const headSnapshotPath = path.join(headRoot, "snapshot.json");
+  const previous = process.cwd();
+
+  try {
+    process.chdir(baseRoot);
+    const baseOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(baseOutput.exitCode, 0);
+    await writeFile(baseSnapshotPath, baseOutput.stdout);
+
+    process.chdir(headRoot);
+    const headOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(headOutput.exitCode, 0);
+    await writeFile(headSnapshotPath, headOutput.stdout);
+
+    const jsonOutput = await captureStdout(() => main(["review-pr", "--json", "--base", baseSnapshotPath, "--head", headSnapshotPath]));
+    assert.equal(jsonOutput.exitCode, 0);
+    const parsed = JSON.parse(jsonOutput.stdout) as {
+      status: string;
+      changedPackages: Array<{ packageName: string }>;
+    };
+    assert.equal(parsed.status, "yellow");
+    assert.deepEqual(parsed.changedPackages.map(change => change.packageName), ["react-native-svg"]);
+
+    const markdownOutput = await captureStdout(() => main([
+      "review-pr",
+      "--base",
+      baseSnapshotPath,
+      "--head",
+      headSnapshotPath,
+      "--format",
+      "markdown",
+      "--repository",
+      "example/app",
+      "--base-ref",
+      "main",
+      "--head-ref",
+      "renovate/react-native-svg"
+    ]));
+    assert.equal(markdownOutput.exitCode, 0);
+    assert.match(markdownOutput.stdout, /NativeGuard Stability Check/);
+    assert.match(markdownOutput.stdout, /example\/app/);
+    assert.match(markdownOutput.stdout, /main\.\.\.renovate\/react-native-svg/);
+    assert.match(markdownOutput.stdout, /react-native-svg@15\.11\.2/);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 test("explains package JSON", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-explain-"));
   await writeFile(

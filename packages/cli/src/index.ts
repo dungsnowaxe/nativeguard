@@ -2,6 +2,7 @@
 import {
   analyzeProject,
   compareNativeGuardSnapshots,
+  createPrReviewReportFromSnapshots,
   createEnvironmentReport,
   createNativeGuardSnapshot,
   explainPackage,
@@ -10,6 +11,7 @@ import {
   writeNativeGuardLockfile,
   writeNativeGuardSnapshot
 } from "@nativeguard/core";
+import { renderPrReviewComment } from "@nativeguard/github-action";
 import { validateDoctorReport, validateNativeGuardEnvironmentReport } from "@nativeguard/schema";
 
 const CLI_VERSION = "0.0.0";
@@ -40,6 +42,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   if (command === "compare") {
     return runCompare(args);
+  }
+
+  if (command === "review-pr") {
+    return runReviewPr(args);
   }
 
   if (command === "--help" || command === "-h" || command === undefined) {
@@ -135,6 +141,44 @@ async function runCompare(args: string[]): Promise<number> {
     }
 
     return comparison.changedPackages.length > 0 ? 1 : 0;
+  } catch (error) {
+    printCommandError(error, json);
+    return 1;
+  }
+}
+
+async function runReviewPr(args: string[]): Promise<number> {
+  const json = args.includes("--json");
+  const format = readFlagValue(args, "--format");
+  const markdown = format ? format === "markdown" : !json;
+  const basePath = readFlagValue(args, "--base");
+  const headPath = readFlagValue(args, "--head");
+  const repository = readFlagValue(args, "--repository");
+  const baseRef = readFlagValue(args, "--base-ref");
+  const headRef = readFlagValue(args, "--head-ref");
+
+  if (!basePath || !headPath) {
+    printCommandError(new NativeGuardError("review-pr requires --base <snapshot> and --head <snapshot>.", "INVALID_ARGUMENTS"), json);
+    return 1;
+  }
+
+  try {
+    const report = createPrReviewReportFromSnapshots(
+      await readNativeGuardSnapshot(basePath),
+      await readNativeGuardSnapshot(headPath)
+    );
+
+    if (json || !markdown) {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(renderPrReviewComment(report, {
+        ...(repository ? { repository } : {}),
+        ...(baseRef ? { baseRef } : {}),
+        ...(headRef ? { headRef } : {})
+      }));
+    }
+
+    return report.status === "red" ? 1 : 0;
   } catch (error) {
     printCommandError(error, json);
     return 1;
@@ -254,6 +298,7 @@ Usage:
   nativeguard env-report [--json]
   nativeguard snapshot [--json] [--output <path>] [--config <path>]
   nativeguard compare --base <path> --head <path> [--json]
+  nativeguard review-pr --base <snapshot> --head <snapshot> [--json|--format markdown]
 `);
 }
 

@@ -1,20 +1,39 @@
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
+  CONFIG_SCHEMA_VERSION,
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
+  PR_REVIEW_SCHEMA_VERSION,
+  SNAPSHOT_SCHEMA_VERSION,
   type CompatibilityRule,
+  type DependencyGraph,
+  type DependencyGraphNode,
   type DependencySnapshot,
   type DoctorReport,
   type Finding,
+  type LocalException,
+  type NativeGuardEnvironmentReport,
+  type NativeGuardConfig,
   type NativeGuardLockfile,
+  type NativeGuardSnapshot,
   type PackageIssue,
+  type PackageExplanation,
   type PackageManagerName,
+  type PolicyStatus,
+  type PrReviewReport,
   type ProjectKind,
   type ProjectProfile,
+  type RecommendedAction,
+  type SnapshotComparison,
   type StabilityStatus,
-  validateLockfile
+  type ToolchainContext,
+  type VerificationType,
+  validateLockfile,
+  validateNativeGuardSnapshot,
+  validateNativeGuardConfig
 } from "@nativeguard/schema";
 
 export class NativeGuardError extends Error {
@@ -29,36 +48,279 @@ export class NativeGuardError extends Error {
 export interface AnalyzeOptions {
   rootDir: string;
   cliVersion: string;
+  configPath?: string;
+  ci?: boolean;
   now?: Date;
 }
 
+export interface ExplainPackageOptions extends AnalyzeOptions {
+  packageName: string;
+}
+
 interface PackageJson {
+  packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  overrides?: Record<string, string>;
+  resolutions?: Record<string, string>;
+  pnpm?: {
+    overrides?: Record<string, string>;
+    packageExtensions?: Record<string, unknown>;
+    patchedDependencies?: Record<string, string>;
+  };
+  workspaces?: string[] | { packages?: string[] };
+  expo?: {
+    newArchEnabled?: boolean;
+  };
 }
 
 export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorReport> {
   const root = path.resolve(options.rootDir);
+  const now = options.now ?? new Date();
   const packageJson = await readPackageJson(root);
+  const config = await loadNativeGuardConfig(root, options.configPath);
   const profile = await detectProjectProfile(root, packageJson);
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
-  const findings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
-  const summary = summarizeFindings(findings, profile.packageManager);
-  const packageIssues = findings.flatMap(finding => (finding.issue ? [finding.issue] : []));
+  const dependencyGraph = await createDependencyGraph(root, packageJson, profile.packageManager);
+  const rawFindings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
+  const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, now);
+  const findings = applyActiveExceptions(rawFindings, exceptionState.active);
+  const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot);
+  const allFindings = [...findings, ...staleExceptionFindings];
+  const summary = summarizeFindings(allFindings, profile.packageManager);
+  const packageIssues = allFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
+  const exitDecision = evaluatePolicyExit(allFindings, exceptionState.stale, config, Boolean(options.ci), summary.status);
 
   return {
     schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
-    generatedAt: (options.now ?? new Date()).toISOString(),
+    generatedAt: now.toISOString(),
     nativeguard: {
       cliVersion: options.cliVersion,
       rulesPackage: RULES_PACKAGE
     },
     project: profile,
     dependencySnapshot,
+    dependencyGraph,
     summary,
+    policy: {
+      ci: config.ci,
+      activeExceptions: exceptionState.active,
+      staleExceptions: exceptionState.stale,
+      exitDecision
+    },
     packageIssues,
-    findings,
+    findings: allFindings,
     nextActions: createNextActions(summary.status, profile.packageManager)
+  };
+}
+
+export async function explainPackage(options: ExplainPackageOptions): Promise<PackageExplanation> {
+  const report = await analyzeProject(options);
+  const { packageName, queryVersion } = parsePackageQuery(options.packageName);
+  const nodes = report.dependencyGraph?.nodes.filter(node => node.packageName === packageName) ?? [];
+  const allDependencies = {
+    ...report.dependencySnapshot.dependencies,
+    ...report.dependencySnapshot.devDependencies
+  };
+  const findings = report.findings.filter(finding => finding.packageName === packageName);
+  const matchingRules = loadBundledRules().filter(rule => {
+    if (rule.packageName !== packageName) return false;
+    if (!ruleMatchesProfile(rule, report.project)) return false;
+    const version = queryVersion ?? allDependencies[packageName] ?? nodes[0]?.installedVersion;
+    return version ? versionMatchesRange(version, rule.affectedRange) : rule.affectedRange === "*";
+  });
+  const activeExceptions = report.policy?.activeExceptions.filter(exception => exception.packageName === packageName) ?? [];
+  const staleExceptions = report.policy?.staleExceptions.filter(exception => exception.packageName === packageName) ?? [];
+  const installedVersions = Array.from(new Set(nodes.map(node => node.installedVersion))).sort();
+  const direct = nodes.some(node => node.direct) || packageName in allDependencies;
+  const recommendedActions = findings.flatMap(finding => finding.remediation);
+  const evidence = findings.flatMap(finding => finding.evidence);
+  const status = determinePackageExplanationStatus(findings, activeExceptions, staleExceptions, nodes.length > 0 || packageName in allDependencies);
+
+  return {
+    packageName,
+    ...(queryVersion ? { queryVersion } : {}),
+    project: report.project,
+    nodes,
+    ...(allDependencies[packageName] ? { declaredRange: allDependencies[packageName] } : {}),
+    installedVersions,
+    direct,
+    classification: nodes[0]?.classification ?? (packageName in allDependencies ? "unknown" : "not-installed"),
+    status,
+    findings,
+    matchingRules,
+    activeExceptions,
+    staleExceptions,
+    recommendedActions,
+    evidence,
+    ...(nodes.length === 0 && !(packageName in allDependencies)
+      ? { unknownReason: `${packageName} was not found in package.json or the dependency graph.` }
+      : {})
+  };
+}
+
+export async function createEnvironmentReport(options: AnalyzeOptions): Promise<NativeGuardEnvironmentReport> {
+  const root = path.resolve(options.rootDir);
+  const packageJson = await readPackageJson(root);
+  const project = await detectProjectProfile(root, packageJson);
+  const toolchain = await collectToolchainContext(root, project.packageManager, packageJson);
+
+  return {
+    schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
+    generatedAt: (options.now ?? new Date()).toISOString(),
+    nativeguard: {
+      cliVersion: options.cliVersion
+    },
+    project: redactProjectProfile(project),
+    toolchain,
+    redaction: {
+      applied: true,
+      hiddenFields: ["project.root", "project.workspace.root"]
+    }
+  };
+}
+
+export async function createNativeGuardSnapshot(options: AnalyzeOptions): Promise<NativeGuardSnapshot> {
+  const root = path.resolve(options.rootDir);
+  const packageJson = await readPackageJson(root);
+  const config = await loadNativeGuardConfig(root, options.configPath);
+  const project = await detectProjectProfile(root, packageJson);
+  const toolchain = await collectToolchainContext(root, project.packageManager, packageJson);
+  const dependencyGraph = await createDependencyGraph(root, packageJson, project.packageManager);
+
+  return {
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    generatedAt: (options.now ?? new Date()).toISOString(),
+    nativeguard: {
+      cliVersion: options.cliVersion,
+      rulesPackage: RULES_PACKAGE
+    },
+    project,
+    toolchain,
+    dependencyGraphFingerprint: fingerprint(dependencyGraph.nodes),
+    projectContextFingerprint: fingerprint(project),
+    rulePackVersion: RULES_PACKAGE.version,
+    dependencyNodes: dependencyGraph.nodes,
+    exceptions: config.exceptions,
+    redaction: {
+      applied: false,
+      hiddenFields: []
+    }
+  };
+}
+
+export async function writeNativeGuardSnapshot(
+  snapshot: NativeGuardSnapshot,
+  outputPath: string
+): Promise<string> {
+  await writeFile(outputPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  return outputPath;
+}
+
+export async function readNativeGuardSnapshot(snapshotPath: string): Promise<NativeGuardSnapshot> {
+  const raw = await readFile(snapshotPath, "utf8");
+  const parsed = JSON.parse(raw) as unknown;
+  const result = validateNativeGuardSnapshot(parsed);
+  if (!result.valid) {
+    throw new NativeGuardError(
+      `NativeGuard snapshot is invalid: ${result.errors.join(", ")}`,
+      "INVALID_SNAPSHOT"
+    );
+  }
+  return parsed as NativeGuardSnapshot;
+}
+
+export function compareNativeGuardSnapshots(
+  base: NativeGuardSnapshot,
+  head: NativeGuardSnapshot
+): SnapshotComparison {
+  const baseNodes = indexSnapshotNodes(base);
+  const headNodes = indexSnapshotNodes(head);
+  const changedPackages = new Map<string, SnapshotComparison["changedPackages"][number]>();
+
+  for (const [key, baseNode] of baseNodes) {
+    const headNode = headNodes.get(key);
+    if (!headNode) {
+      changedPackages.set(key, {
+        packageName: baseNode.packageName,
+        changeType: "removed",
+        beforeVersion: baseNode.installedVersion,
+        direct: baseNode.direct
+      });
+    }
+  }
+
+  for (const [key, headNode] of headNodes) {
+    const baseNode = baseNodes.get(key);
+    if (!baseNode) {
+      changedPackages.set(key, {
+        packageName: headNode.packageName,
+        changeType: "added",
+        afterVersion: headNode.installedVersion,
+        direct: headNode.direct
+      });
+      continue;
+    }
+    if (baseNode.installedVersion !== headNode.installedVersion) {
+      changedPackages.set(key, {
+        packageName: headNode.packageName,
+        changeType: "changed",
+        beforeVersion: baseNode.installedVersion,
+        afterVersion: headNode.installedVersion,
+        direct: baseNode.direct || headNode.direct
+      });
+    }
+  }
+
+  const changes = Array.from(changedPackages.values()).sort((left, right) => {
+    if (left.packageName === right.packageName) return left.changeType.localeCompare(right.changeType);
+    return left.packageName.localeCompare(right.packageName);
+  });
+  const baseDuplicateReact = duplicateSet(base.dependencyNodes, "react");
+  const baseDuplicateReactNative = duplicateSet(base.dependencyNodes, "react-native");
+  const headDuplicateReact = duplicatesForPackage(head.dependencyNodes, "react")
+    .filter(duplicate => !baseDuplicateReact.has(duplicate.versions.join("|")));
+  const headDuplicateReactNative = duplicatesForPackage(head.dependencyNodes, "react-native")
+    .filter(duplicate => !baseDuplicateReactNative.has(duplicate.versions.join("|")));
+
+  return {
+    baseGeneratedAt: base.generatedAt,
+    headGeneratedAt: head.generatedAt,
+    changedPackages: changes,
+    addedPackages: changes.filter(change => change.changeType === "added"),
+    removedPackages: changes.filter(change => change.changeType === "removed"),
+    changedPackageVersions: changes.filter(change => change.changeType === "changed"),
+    newDuplicateReact: headDuplicateReact,
+    newDuplicateReactNative: headDuplicateReactNative
+  };
+}
+
+export function createPrReviewReportFromSnapshots(
+  base: NativeGuardSnapshot,
+  head: NativeGuardSnapshot,
+  now: Date = new Date()
+): PrReviewReport {
+  const comparison = compareNativeGuardSnapshots(base, head);
+  const changedNodes = changedNodesFromComparison(head, comparison);
+  const newRisks = [
+    ...duplicateFindings("react", comparison.newDuplicateReact),
+    ...duplicateFindings("react-native", comparison.newDuplicateReactNative)
+  ];
+  const requiredActions = createPrRequiredActions(changedNodes, newRisks.length);
+  const verificationChecklist = createPrVerificationChecklist(changedNodes, newRisks.length);
+
+  return {
+    schemaVersion: PR_REVIEW_SCHEMA_VERSION,
+    generatedAt: now.toISOString(),
+    status: newRisks.length > 0 ? "red" : comparison.changedPackages.length > 0 ? "yellow" : "green",
+    project: head.project,
+    changedPackages: changedNodes,
+    newRisks,
+    knownExceptions: head.exceptions,
+    staleExceptions: staleSnapshotExceptions(head.exceptions, now),
+    requiredActions,
+    verificationChecklist,
+    evidence: []
   };
 }
 
@@ -117,40 +379,51 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   const hasIosProject = await exists(path.join(root, "ios"));
   const hasAndroidProject = await exists(path.join(root, "android"));
   const packageManager = await detectPackageManager(root);
+  const lockfileState = await detectLockfileState(root, packageManager);
+  const appConfig = await readExpoAppConfig(root);
+  const workspace = await detectWorkspace(root, packageJson);
+  const expoModulesPackages = Object.keys(dependencies)
+    .filter(name => name === "expo-modules-core" || name.startsWith("expo-"))
+    .sort();
+  const hasExpoRouter = Boolean(dependencies["expo-router"] || (await exists(path.join(root, "app"))));
+  const hasExpoModules = Boolean(expoVersion || expoModulesPackages.length > 0);
+  const newArchitecture = await detectNewArchitecture(root, packageJson, appConfig);
+  const baseProfile = {
+    root,
+    packageManager,
+    ...(await detectPackageManagerVersion(root, packageManager, packageJson)),
+    ...(expoVersion ? { expoVersion } : {}),
+    ...(reactNativeVersion ? { reactNativeVersion } : {}),
+    hasIosProject,
+    hasAndroidProject,
+    hasGeneratedNativeProjects: hasIosProject || hasAndroidProject,
+    hasExpoRouter,
+    hasExpoModules,
+    expoModulesPackages,
+    newArchitecture,
+    ...(workspace ? { workspace } : {}),
+    lockfileState,
+    detectionConfidence: "high" as const
+  };
 
   if (expoVersion && (hasIosProject || hasAndroidProject)) {
     return {
-      root,
+      ...baseProfile,
       kind: "expo-prebuild",
-      packageManager,
-      expoVersion,
-      ...(reactNativeVersion ? { reactNativeVersion } : {}),
-      hasIosProject,
-      hasAndroidProject
     };
   }
 
   if (reactNativeVersion && (hasIosProject || hasAndroidProject)) {
     return {
-      root,
+      ...baseProfile,
       kind: "bare-react-native",
-      packageManager,
-      ...(expoVersion ? { expoVersion } : {}),
-      reactNativeVersion,
-      hasIosProject,
-      hasAndroidProject
     };
   }
 
   if (expoVersion) {
     return {
-      root,
-      kind: "expo-go",
-      packageManager,
-      expoVersion,
-      ...(reactNativeVersion ? { reactNativeVersion } : {}),
-      hasIosProject,
-      hasAndroidProject
+      ...baseProfile,
+      kind: "expo-managed"
     };
   }
 
@@ -160,11 +433,93 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   );
 }
 
+export async function collectToolchainContext(
+  root: string,
+  packageManager: PackageManagerName,
+  packageJson: PackageJson = {}
+): Promise<ToolchainContext> {
+  const missingContext: string[] = [];
+  const packageManagerVersion = (await detectPackageManagerVersion(root, packageManager, packageJson)).packageManagerVersion;
+  const easProfile = await detectEasProfile(root);
+  const gradleVersion = await readGradleVersion(root);
+  const androidGradlePluginVersion = await readAndroidGradlePluginVersion(root);
+  const kotlinVersion = await readKotlinVersion(root);
+  const androidSdk = await readAndroidSdkVersions(root);
+
+  if (!packageManagerVersion) missingContext.push("packageManagerVersion");
+  if (!(await exists(path.join(root, "ios", "Podfile.lock")))) missingContext.push("cocoaPodsVersion");
+  if (!gradleVersion) missingContext.push("gradleVersion");
+  if (!androidGradlePluginVersion) missingContext.push("androidGradlePluginVersion");
+  if (!kotlinVersion) missingContext.push("kotlinVersion");
+
+  return {
+    packageManager,
+    nodeVersion: process.version,
+    ...(packageManagerVersion ? { packageManagerVersion } : {}),
+    ...(easProfile ? { easProfile } : {}),
+    ...(gradleVersion ? { gradleVersion } : {}),
+    ...(androidGradlePluginVersion ? { androidGradlePluginVersion } : {}),
+    ...(kotlinVersion ? { kotlinVersion } : {}),
+    ...(androidSdk ? { androidSdk } : {}),
+    missingContext
+  };
+}
+
+export async function createDependencyGraph(
+  root: string,
+  packageJson: PackageJson,
+  packageManager?: PackageManagerName
+): Promise<DependencyGraph> {
+  const detectedPackageManager = packageManager ?? await detectPackageManager(root);
+  const declaredDependencies = {
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies
+  };
+  const directNames = new Set(Object.keys(declaredDependencies));
+  const patchedPackages = await detectPatchedPackages(root, packageJson);
+  const overrides = {
+    ...(packageJson.overrides ?? {}),
+    ...(packageJson.pnpm?.overrides ?? {})
+  };
+  const resolutions = packageJson.resolutions ?? {};
+  const packageExtensions = packageJson.pnpm?.packageExtensions ?? {};
+  const lockfileNodes = await readGraphNodesFromLockfile(root, detectedPackageManager, declaredDependencies, patchedPackages, overrides);
+  const lockfileNodeNames = new Set(lockfileNodes.map(node => node.packageName));
+  const manifestOnlyNodes = Object.entries(declaredDependencies)
+    .filter(([packageName]) => !lockfileNodeNames.has(packageName))
+    .map(([packageName, declaredRange]): DependencyGraphNode => createGraphNode({
+      packageName,
+      installedVersion: declaredRange,
+      declaredRange,
+      direct: true,
+      dependencyPath: [packageName],
+      packageManager: detectedPackageManager,
+      patchedPackages,
+      overrides
+    }));
+  const nodes = [...lockfileNodes, ...manifestOnlyNodes].sort((left, right) => {
+    if (left.packageName === right.packageName) return left.installedVersion.localeCompare(right.installedVersion);
+    return left.packageName.localeCompare(right.packageName);
+  });
+  const duplicates = findDuplicateDependencies(nodes);
+
+  return {
+    nodes,
+    duplicates,
+    duplicateReact: duplicates.filter(duplicate => duplicate.packageName === "react"),
+    duplicateReactNative: duplicates.filter(duplicate => duplicate.packageName === "react-native"),
+    patchedPackages,
+    overrides,
+    resolutions,
+    packageExtensions
+  };
+}
+
 export async function detectPackageManager(root: string): Promise<PackageManagerName> {
-  if (await exists(path.join(root, "package-lock.json"))) return "npm";
-  if (await exists(path.join(root, "yarn.lock"))) return "yarn";
-  if (await exists(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
-  if (await exists(path.join(root, "bun.lockb")) || (await exists(path.join(root, "bun.lock")))) return "bun";
+  if (await findLockfile(root, ["package-lock.json"])) return "npm";
+  if (await findLockfile(root, ["yarn.lock"])) return "yarn";
+  if (await findLockfile(root, ["pnpm-lock.yaml"])) return "pnpm";
+  if (await findLockfile(root, ["bun.lockb", "bun.lock"])) return "bun";
   return "unknown";
 }
 
@@ -180,8 +535,236 @@ async function readPackageJson(root: string): Promise<PackageJson> {
   }
 }
 
+export async function loadNativeGuardConfig(root: string, configPath?: string): Promise<NativeGuardConfig> {
+  const defaultConfig = createDefaultConfig();
+  const resolvedConfigPath = configPath
+    ? path.resolve(root, configPath)
+    : path.join(root, "nativeguard.config.json");
+  const raw = await readTextIfExists(resolvedConfigPath);
+
+  if (!raw) {
+    if (configPath) {
+      throw new NativeGuardError(`NativeGuard config was not found at ${configPath}.`, "MISSING_CONFIG");
+    }
+    return defaultConfig;
+  }
+
+  const parsed = JSON.parse(raw) as unknown;
+  const validation = validateNativeGuardConfig(parsed);
+  if (!validation.valid) {
+    throw new NativeGuardError(
+      `NativeGuard config is invalid: ${validation.errors.join(", ")}`,
+      "INVALID_CONFIG"
+    );
+  }
+
+  const config = parsed as NativeGuardConfig;
+  return {
+    ...defaultConfig,
+    ...config,
+    rules: {
+      ...defaultConfig.rules,
+      ...config.rules
+    },
+    ci: {
+      ...defaultConfig.ci,
+      ...config.ci
+    },
+    redaction: {
+      ...defaultConfig.redaction,
+      ...config.redaction
+    },
+    exceptions: config.exceptions
+  };
+}
+
+function createDefaultConfig(): NativeGuardConfig {
+  return {
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    rules: {
+      source: "@nativeguard/rules"
+    },
+    ci: {
+      failOn: ["red"],
+      warnOn: ["yellow", "unknown", "stale-exception"]
+    },
+    exceptions: [],
+    redaction: {
+      hidePrivateScopes: true,
+      hideAbsolutePaths: true
+    }
+  };
+}
+
+function evaluateExceptions(
+  exceptions: LocalException[],
+  snapshot: DependencySnapshot,
+  now: Date
+): { active: LocalException[]; stale: LocalException[] } {
+  const allDependencies = {
+    ...snapshot.dependencies,
+    ...snapshot.devDependencies
+  };
+  const active: LocalException[] = [];
+  const stale: LocalException[] = [];
+
+  for (const exception of exceptions) {
+    const installedVersion = allDependencies[exception.packageName];
+    if (!installedVersion || !versionMatchesRange(installedVersion, exception.allowedVersions)) continue;
+    if (isExceptionExpired(exception, now)) {
+      stale.push(exception);
+    } else {
+      active.push(exception);
+    }
+  }
+
+  return { active, stale };
+}
+
+function applyActiveExceptions(findings: Finding[], activeExceptions: LocalException[]): Finding[] {
+  return findings.map(finding => {
+    const exception = activeExceptions.find(candidate => candidate.packageName === finding.packageName);
+    if (!exception) return finding;
+
+    return {
+      ...finding,
+      severity: finding.severity === "error" ? "warning" : finding.severity,
+      status: "accepted-exception",
+      detail: `${finding.detail} Local exception approved by ${exception.owner} until ${exception.expiresAt}: ${exception.reason}`,
+      remediation: [
+        ...finding.remediation,
+        {
+          type: "manual-check",
+          packageName: exception.packageName,
+          note: `Required verification for exception: ${exception.requiredVerification.join(", ")}`
+        }
+      ]
+    };
+  });
+}
+
+function createStaleExceptionFindings(
+  staleExceptions: LocalException[],
+  snapshot: DependencySnapshot
+): Finding[] {
+  const allDependencies = {
+    ...snapshot.dependencies,
+    ...snapshot.devDependencies
+  };
+
+  return staleExceptions.map(exception => ({
+    id: `finding-stale-exception-${exception.packageName}`,
+    packageName: exception.packageName,
+    severity: "warning",
+    status: "accepted-exception",
+    title: `Exception for ${exception.packageName} is stale`,
+    detail: `${exception.packageName}@${allDependencies[exception.packageName] ?? "unknown"} still matches an exception that expired on ${exception.expiresAt}.`,
+    confidence: "high",
+    evidence: [
+      {
+        type: "manual",
+        summary: exception.reason,
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "manual-check",
+        packageName: exception.packageName,
+        note: `Renew or remove the exception owned by ${exception.owner}.`
+      }
+    ]
+  }));
+}
+
+function evaluatePolicyExit(
+  findings: Finding[],
+  staleExceptions: LocalException[],
+  config: NativeGuardConfig,
+  ci: boolean,
+  summaryStatus: StabilityStatus
+): { exitCode: 0 | 1; reason: string } {
+  if (!ci) {
+    return {
+      exitCode: summaryStatus === "risky" ? 1 : 0,
+      reason: summaryStatus === "risky" ? "Risky findings detected." : "No local blocking policy was applied."
+    };
+  }
+
+  const policyStatuses = new Set(findings.map(findingToPolicyStatus));
+  if (staleExceptions.length > 0) {
+    policyStatuses.add("stale-exception");
+  }
+
+  for (const blockedStatus of config.ci.failOn) {
+    if (policyStatuses.has(blockedStatus)) {
+      return {
+        exitCode: 1,
+        reason: `CI policy failed on ${blockedStatus}.`
+      };
+    }
+  }
+
+  return {
+    exitCode: 0,
+    reason: "CI policy found no blocking statuses."
+  };
+}
+
+function findingToPolicyStatus(finding: Finding): PolicyStatus {
+  if (finding.id.startsWith("finding-stale-exception-")) return "yellow";
+  if (finding.status === "risky" || finding.severity === "error") return "red";
+  if (finding.status === "accepted-exception") return "blue";
+  if (finding.status === "unsupported") return "unknown";
+  if (finding.severity === "warning") return "yellow";
+  return "green";
+}
+
+function isExceptionExpired(exception: LocalException, now: Date): boolean {
+  const expiresAt = Date.parse(exception.expiresAt);
+  return Number.isNaN(expiresAt) || expiresAt < now.getTime();
+}
+
+function determinePackageExplanationStatus(
+  findings: Finding[],
+  activeExceptions: LocalException[],
+  staleExceptions: LocalException[],
+  installed: boolean
+): PackageExplanation["status"] {
+  if (!installed) return "unknown";
+  if (staleExceptions.length > 0) return "accepted-exception";
+  if (findings.some(finding => finding.status === "risky" || finding.severity === "error")) return "risky";
+  if (activeExceptions.length > 0 || findings.some(finding => finding.status === "accepted-exception")) return "accepted-exception";
+  if (findings.some(finding => finding.status === "unsupported")) return "unsupported";
+  return "stable";
+}
+
+function parsePackageQuery(query: string): { packageName: string; queryVersion?: string } {
+  if (query.startsWith("@")) {
+    const segments = query.split("@");
+    if (segments.length >= 3) {
+      return {
+        packageName: `@${segments[1]}`,
+        ...(segments[2] ? { queryVersion: segments.slice(2).join("@") } : {})
+      };
+    }
+    return { packageName: query };
+  }
+
+  const versionSeparator = query.lastIndexOf("@");
+  if (versionSeparator > 0) {
+    return {
+      packageName: query.slice(0, versionSeparator),
+      queryVersion: query.slice(versionSeparator + 1)
+    };
+  }
+
+  return { packageName: query };
+}
+
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {
-  const lockfile = await readNpmLockfile(root);
+  const packageManager = await detectPackageManager(root);
+  const lockfile = await readLockfile(root, packageManager);
   return {
     dependencies: packageJson.dependencies ?? {},
     devDependencies: packageJson.devDependencies ?? {},
@@ -189,15 +772,22 @@ async function createDependencySnapshot(root: string, packageJson: PackageJson):
   };
 }
 
-async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfile"]> {
-  const lockfilePath = path.join(root, "package-lock.json");
+async function readLockfile(root: string, packageManager: PackageManagerName): Promise<DependencySnapshot["lockfile"]> {
+  const lockfilePath = await lockfilePathFor(root, packageManager);
+  if (!lockfilePath) return undefined;
+
   try {
-    const raw = await readFile(lockfilePath, "utf8");
-    const parsed = JSON.parse(raw) as { lockfileVersion?: number; packages?: Record<string, unknown> };
+    const raw = await readFile(lockfilePath.absolute, "utf8");
+    const parsed = lockfilePath.relative === "package-lock.json"
+      ? JSON.parse(raw) as { lockfileVersion?: number; packages?: Record<string, unknown> }
+      : undefined;
+    const packageCount = parsed?.packages ? Object.keys(parsed.packages).length : countLockfilePackages(raw, lockfilePath.relative);
+    const fresh = await isLockfileFresh(root, lockfilePath.absolute);
     return {
-      path: "package-lock.json",
-      ...(parsed.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
-      packageCount: parsed.packages ? Object.keys(parsed.packages).length : 0
+      path: lockfilePath.relative,
+      ...(parsed?.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
+      packageCount,
+      ...(fresh === undefined ? {} : { fresh })
     };
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
@@ -205,6 +795,646 @@ async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfi
     }
     throw error;
   }
+}
+
+async function readExpoAppConfig(root: string): Promise<{ newArchEnabled?: boolean } | undefined> {
+  const appJson = await readJsonFile<{ expo?: { newArchEnabled?: boolean } }>(path.join(root, "app.json"));
+  if (appJson?.expo && typeof appJson.expo.newArchEnabled === "boolean") {
+    return { newArchEnabled: appJson.expo.newArchEnabled };
+  }
+
+  const appConfigJson = await readJsonFile<{ expo?: { newArchEnabled?: boolean } }>(path.join(root, "app.config.json"));
+  if (appConfigJson?.expo && typeof appConfigJson.expo.newArchEnabled === "boolean") {
+    return { newArchEnabled: appConfigJson.expo.newArchEnabled };
+  }
+
+  return undefined;
+}
+
+async function detectNewArchitecture(
+  root: string,
+  packageJson: PackageJson,
+  appConfig: { newArchEnabled?: boolean } | undefined
+): Promise<{ enabled?: boolean; sources: string[] }> {
+  const sources: string[] = [];
+  let enabled: boolean | undefined;
+
+  if (typeof packageJson.expo?.newArchEnabled === "boolean") {
+    enabled = packageJson.expo.newArchEnabled;
+    sources.push("package.json:expo.newArchEnabled");
+  }
+
+  if (typeof appConfig?.newArchEnabled === "boolean") {
+    enabled = appConfig.newArchEnabled;
+    sources.push("app.json:expo.newArchEnabled");
+  }
+
+  const gradleProperties = await readTextIfExists(path.join(root, "android", "gradle.properties"));
+  if (gradleProperties) {
+    const match = gradleProperties.match(/^newArchEnabled=(true|false)$/m);
+    if (match?.[1]) {
+      enabled = match[1] === "true";
+      sources.push("android/gradle.properties:newArchEnabled");
+    }
+  }
+
+  const podfileProperties = await readJsonFile<{ newArchEnabled?: string | boolean }>(
+    path.join(root, "ios", "Podfile.properties.json")
+  );
+  if (typeof podfileProperties?.newArchEnabled === "boolean" || typeof podfileProperties?.newArchEnabled === "string") {
+    enabled = podfileProperties.newArchEnabled === true || podfileProperties.newArchEnabled === "true";
+    sources.push("ios/Podfile.properties.json:newArchEnabled");
+  }
+
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    sources
+  };
+}
+
+async function detectWorkspace(
+  root: string,
+  packageJson: PackageJson
+): Promise<{ root: string; type: "npm" | "pnpm" | "yarn" | "unknown"; isWorkspaceRoot: boolean } | undefined> {
+  const pnpmWorkspaceRoot = await findUp(root, "pnpm-workspace.yaml");
+  if (pnpmWorkspaceRoot) {
+    return {
+      root: pnpmWorkspaceRoot,
+      type: "pnpm",
+      isWorkspaceRoot: pnpmWorkspaceRoot === root
+    };
+  }
+
+  const workspaces = packageJson.workspaces;
+  const hasPackageJsonWorkspaces = Array.isArray(workspaces) || Array.isArray(workspaces?.packages);
+  if (hasPackageJsonWorkspaces) {
+    return {
+      root,
+      type: "npm",
+      isWorkspaceRoot: true
+    };
+  }
+
+  return undefined;
+}
+
+async function detectLockfileState(
+  root: string,
+  packageManager: PackageManagerName
+): Promise<{ path?: string; present: boolean; fresh?: boolean }> {
+  const lockfile = await lockfilePathFor(root, packageManager);
+  if (!lockfile) {
+    return { present: false };
+  }
+
+  const present = await exists(lockfile.absolute);
+  if (!present) {
+    return {
+      path: lockfile.relative,
+      present: false
+    };
+  }
+
+  const fresh = await isLockfileFresh(root, lockfile.absolute);
+  return {
+    path: lockfile.relative,
+    present: true,
+    ...(fresh === undefined ? {} : { fresh })
+  };
+}
+
+async function detectPackageManagerVersion(
+  root: string,
+  packageManager: PackageManagerName,
+  packageJson: PackageJson
+): Promise<Pick<ProjectProfile, "packageManagerVersion">> {
+  if (packageJson.packageManager) {
+    const [, version] = packageJson.packageManager.split("@");
+    if (version) return { packageManagerVersion: version };
+  }
+
+  const rootPackageJson = await readJsonFile<PackageJson>(path.join(root, "package.json"));
+  if (rootPackageJson?.packageManager) {
+    const [, version] = rootPackageJson.packageManager.split("@");
+    if (version) return { packageManagerVersion: version };
+  }
+
+  if (packageManager === "npm" && process.env.npm_config_user_agent) {
+    const match = process.env.npm_config_user_agent.match(/npm\/([^\s]+)/);
+    if (match?.[1]) return { packageManagerVersion: match[1] };
+  }
+
+  return {};
+}
+
+async function detectEasProfile(root: string): Promise<ToolchainContext["easProfile"] | undefined> {
+  const easJson = await readJsonFile<{ build?: Record<string, unknown> }>(path.join(root, "eas.json"));
+  const profileName = easJson?.build ? Object.keys(easJson.build)[0] : undefined;
+  return profileName ? { name: profileName, platform: "all" } : undefined;
+}
+
+async function readGradleVersion(root: string): Promise<string | undefined> {
+  const wrapper = await readTextIfExists(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.properties"));
+  return wrapper?.match(/gradle-([0-9.]+)-/)?.[1];
+}
+
+async function readAndroidGradlePluginVersion(root: string): Promise<string | undefined> {
+  const settingsGradle = await readTextIfExists(path.join(root, "android", "settings.gradle"));
+  return settingsGradle?.match(/com\.android\.application["']?\s+version\s+["']([^"']+)["']/)?.[1];
+}
+
+async function readKotlinVersion(root: string): Promise<string | undefined> {
+  const buildGradle = await readTextIfExists(path.join(root, "android", "build.gradle"));
+  return buildGradle?.match(/kotlinVersion\s*=\s*["']([^"']+)["']/)?.[1];
+}
+
+async function readAndroidSdkVersions(root: string): Promise<ToolchainContext["androidSdk"] | undefined> {
+  const buildGradle = await readTextIfExists(path.join(root, "android", "build.gradle"));
+  if (!buildGradle) return undefined;
+  const compileSdk = buildGradle.match(/compileSdkVersion\s*=?\s*(\d+)/)?.[1];
+  const targetSdk = buildGradle.match(/targetSdkVersion\s*=?\s*(\d+)/)?.[1];
+  const minSdk = buildGradle.match(/minSdkVersion\s*=?\s*(\d+)/)?.[1];
+  if (!compileSdk && !targetSdk && !minSdk) return undefined;
+  return {
+    ...(compileSdk ? { compileSdk } : {}),
+    ...(targetSdk ? { targetSdk } : {}),
+    ...(minSdk ? { minSdk } : {})
+  };
+}
+
+async function isLockfileFresh(root: string, lockfilePath: string): Promise<boolean | undefined> {
+  try {
+    const [packageJsonStat, lockfileStat] = await Promise.all([
+      stat(path.join(root, "package.json")),
+      stat(lockfilePath)
+    ]);
+    return lockfileStat.mtimeMs >= packageJsonStat.mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+async function lockfilePathFor(
+  root: string,
+  packageManager: PackageManagerName
+): Promise<{ absolute: string; relative: string } | undefined> {
+  if (packageManager === "npm") return findLockfile(root, ["package-lock.json"]);
+  if (packageManager === "yarn") return findLockfile(root, ["yarn.lock"]);
+  if (packageManager === "pnpm") return findLockfile(root, ["pnpm-lock.yaml"]);
+  if (packageManager === "bun") return findLockfile(root, ["bun.lock", "bun.lockb"]);
+  return undefined;
+}
+
+async function findLockfile(
+  root: string,
+  fileNames: string[]
+): Promise<{ absolute: string; relative: string } | undefined> {
+  let current = path.resolve(root);
+  while (true) {
+    for (const fileName of fileNames) {
+      const absolute = path.join(current, fileName);
+      if (await exists(absolute)) {
+        return {
+          absolute,
+          relative: path.relative(root, absolute) || fileName
+        };
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function countLockfilePackages(raw: string, lockfileName: string): number {
+  if (lockfileName === "pnpm-lock.yaml") {
+    return raw.split("\n").filter(line => /^\s{2}\/[^:]+:/.test(line)).length;
+  }
+  if (lockfileName === "yarn.lock") {
+    return raw.split("\n").filter(line => /^[^#\s][^:]+:/.test(line)).length;
+  }
+  return 0;
+}
+
+async function readGraphNodesFromLockfile(
+  root: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): Promise<DependencyGraphNode[]> {
+  const lockfile = await lockfilePathFor(root, packageManager);
+  if (!lockfile) return [];
+  const raw = await readTextIfExists(lockfile.absolute);
+  if (!raw) return [];
+
+  if (lockfile.relative.endsWith("package-lock.json")) {
+    return readNpmGraphNodes(raw, packageManager, declaredDependencies, patchedPackages, overrides);
+  }
+  if (lockfile.relative.endsWith("pnpm-lock.yaml")) {
+    return readPnpmGraphNodes(raw, packageManager, declaredDependencies, patchedPackages, overrides);
+  }
+  if (lockfile.relative.endsWith("yarn.lock")) {
+    return readYarnGraphNodes(raw, packageManager, declaredDependencies, patchedPackages, overrides);
+  }
+
+  return [];
+}
+
+function readNpmGraphNodes(
+  raw: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): DependencyGraphNode[] {
+  const parsed = JSON.parse(raw) as {
+    packages?: Record<string, {
+      version?: string;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    }>;
+  };
+  const packages = parsed.packages ?? {};
+  const rootDependencies = {
+    ...(packages[""]?.dependencies ?? {}),
+    ...(packages[""]?.devDependencies ?? {}),
+    ...declaredDependencies
+  };
+
+  return Object.entries(packages)
+    .filter(([packagePath]) => packagePath.startsWith("node_modules/"))
+    .map(([packagePath, metadata]): DependencyGraphNode | undefined => {
+      const packageName = packageNameFromNodeModulesPath(packagePath);
+      if (!packageName || !metadata.version) return undefined;
+      return createGraphNode({
+        packageName,
+        installedVersion: metadata.version,
+        ...(rootDependencies[packageName] ? { declaredRange: rootDependencies[packageName] } : {}),
+        direct: packageName in rootDependencies,
+        dependencyPath: dependencyPathFromPackagePath(packagePath),
+        lockfileSource: "package-lock.json",
+        packageManager,
+        patchedPackages,
+        overrides,
+        peerDependencyMismatches: findPeerDependencyMismatches(metadata.peerDependencies ?? {}, rootDependencies)
+      });
+    })
+    .filter((node): node is DependencyGraphNode => Boolean(node));
+}
+
+function readPnpmGraphNodes(
+  raw: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): DependencyGraphNode[] {
+  const nodes: DependencyGraphNode[] = [];
+  const directNames = new Set(Object.keys(declaredDependencies));
+  for (const line of raw.split("\n")) {
+    const match = line.match(/^\s{2}\/((?:@[^/]+\/)?[^/@:]+)@([^:]+):/);
+    if (!match?.[1] || !match[2]) continue;
+    const packageName = match[1];
+    nodes.push(createGraphNode({
+      packageName,
+      installedVersion: match[2],
+      ...(declaredDependencies[packageName] ? { declaredRange: declaredDependencies[packageName] } : {}),
+      direct: directNames.has(packageName),
+      dependencyPath: [packageName],
+      lockfileSource: "pnpm-lock.yaml",
+      packageManager,
+      patchedPackages,
+      overrides
+    }));
+  }
+  return nodes;
+}
+
+function readYarnGraphNodes(
+  raw: string,
+  packageManager: PackageManagerName,
+  declaredDependencies: Record<string, string>,
+  patchedPackages: string[],
+  overrides: Record<string, string>
+): DependencyGraphNode[] {
+  const nodes: DependencyGraphNode[] = [];
+  let currentPackageName: string | undefined;
+  for (const line of raw.split("\n")) {
+    const keyMatch = line.match(/^"?((?:@[^/]+\/)?[^@":]+)@[^:]+:$/);
+    if (keyMatch?.[1]) {
+      currentPackageName = keyMatch[1];
+      continue;
+    }
+    const versionMatch = line.match(/^\s+version\s+"([^"]+)"/);
+    if (currentPackageName && versionMatch?.[1]) {
+      nodes.push(createGraphNode({
+        packageName: currentPackageName,
+        installedVersion: versionMatch[1],
+        ...(declaredDependencies[currentPackageName] ? { declaredRange: declaredDependencies[currentPackageName] } : {}),
+        direct: currentPackageName in declaredDependencies,
+        dependencyPath: [currentPackageName],
+        lockfileSource: "yarn.lock",
+        packageManager,
+        patchedPackages,
+        overrides
+      }));
+      currentPackageName = undefined;
+    }
+  }
+  return nodes;
+}
+
+function createGraphNode(options: {
+  packageName: string;
+  installedVersion: string;
+  declaredRange?: string;
+  direct: boolean;
+  dependencyPath: string[];
+  lockfileSource?: string;
+  packageManager: PackageManagerName;
+  patchedPackages: string[];
+  overrides: Record<string, string>;
+  peerDependencyMismatches?: string[];
+}): DependencyGraphNode {
+  return {
+    packageName: options.packageName,
+    installedVersion: options.installedVersion,
+    ...(options.declaredRange ? { declaredRange: options.declaredRange } : {}),
+    direct: options.direct,
+    dependencyPath: options.dependencyPath,
+    ...(options.lockfileSource ? { lockfileSource: options.lockfileSource } : {}),
+    packageManager: options.packageManager,
+    classification: classifyPackage(options.packageName),
+    patched: options.patchedPackages.includes(options.packageName),
+    overridden: options.packageName in options.overrides,
+    peerDependencyMismatches: options.peerDependencyMismatches ?? [],
+    matchingRuleIds: []
+  };
+}
+
+async function detectPatchedPackages(root: string, packageJson: PackageJson): Promise<string[]> {
+  const patched = new Set(Object.keys(packageJson.pnpm?.patchedDependencies ?? {}).map(packageNameFromPatchSpecifier));
+  const patchesDir = path.join(root, "patches");
+  const entries = await readDirectoryNames(patchesDir);
+  for (const entry of entries) {
+    if (!entry.endsWith(".patch")) continue;
+    patched.add(packageNameFromPatchFile(entry));
+  }
+  return Array.from(patched).filter(Boolean).sort();
+}
+
+async function readDirectoryNames(directory: string): Promise<string[]> {
+  try {
+    const { readdir } = await import("node:fs/promises");
+    return await readdir(directory);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return [];
+    throw error;
+  }
+}
+
+function packageNameFromPatchSpecifier(specifier: string): string {
+  return specifier.replace(/@npm:.+$/, "").replace(/@patch:.+$/, "");
+}
+
+function packageNameFromPatchFile(fileName: string): string {
+  const withoutPatch = fileName.replace(/\.patch$/, "");
+  if (withoutPatch.startsWith("@")) {
+    const segments = withoutPatch.split("+");
+    return `${segments[0]}/${segments[1] ?? ""}`;
+  }
+  return withoutPatch.split("+")[0] ?? withoutPatch;
+}
+
+function packageNameFromNodeModulesPath(packagePath: string): string | undefined {
+  const segments = packagePath.split("/").filter(Boolean);
+  const nodeModulesIndex = segments.lastIndexOf("node_modules");
+  const first = segments[nodeModulesIndex + 1];
+  if (!first) return undefined;
+  if (first.startsWith("@")) {
+    const second = segments[nodeModulesIndex + 2];
+    return second ? `${first}/${second}` : undefined;
+  }
+  return first;
+}
+
+function dependencyPathFromPackagePath(packagePath: string): string[] {
+  const result: string[] = [];
+  const segments = packagePath.split("/").filter(Boolean);
+  for (let index = 0; index < segments.length; index += 1) {
+    if (segments[index] !== "node_modules") continue;
+    const first = segments[index + 1];
+    if (!first) continue;
+    if (first.startsWith("@")) {
+      const second = segments[index + 2];
+      if (second) result.push(`${first}/${second}`);
+      index += 2;
+    } else {
+      result.push(first);
+      index += 1;
+    }
+  }
+  return result;
+}
+
+function classifyPackage(packageName: string): DependencyGraphNode["classification"] {
+  if (packageName === "expo-modules-core" || packageName.startsWith("expo-")) return "expo-module";
+  if (
+    packageName === "react-native" ||
+    packageName.startsWith("react-native-") ||
+    packageName.startsWith("@react-native/") ||
+    packageName.startsWith("@react-native-")
+  ) {
+    return "native-module";
+  }
+  if (packageName.startsWith("@")) return "unknown";
+  return "js-only";
+}
+
+function findPeerDependencyMismatches(
+  peerDependencies: Record<string, string>,
+  rootDependencies: Record<string, string>
+): string[] {
+  return Object.entries(peerDependencies)
+    .filter(([packageName]) => !(packageName in rootDependencies))
+    .map(([packageName, range]) => `${packageName}@${range}`);
+}
+
+function findDuplicateDependencies(nodes: DependencyGraphNode[]): Array<{ packageName: string; versions: string[] }> {
+  const versionsByPackage = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    const versions = versionsByPackage.get(node.packageName) ?? new Set<string>();
+    versions.add(node.installedVersion);
+    versionsByPackage.set(node.packageName, versions);
+  }
+
+  return Array.from(versionsByPackage.entries())
+    .map(([packageName, versions]) => ({ packageName, versions: Array.from(versions).sort() }))
+    .filter(duplicate => duplicate.versions.length > 1)
+    .sort((left, right) => left.packageName.localeCompare(right.packageName));
+}
+
+function indexSnapshotNodes(snapshot: NativeGuardSnapshot): Map<string, DependencyGraphNode> {
+  const nodes = new Map<string, DependencyGraphNode>();
+  for (const node of snapshot.dependencyNodes) {
+    nodes.set(`${node.packageName}\0${node.dependencyPath.join(">")}`, node);
+  }
+  return nodes;
+}
+
+function duplicatesForPackage(
+  nodes: DependencyGraphNode[],
+  packageName: string
+): Array<{ packageName: string; versions: string[] }> {
+  return findDuplicateDependencies(nodes).filter(duplicate => duplicate.packageName === packageName);
+}
+
+function duplicateSet(nodes: DependencyGraphNode[], packageName: string): Set<string> {
+  return new Set(duplicatesForPackage(nodes, packageName).map(duplicate => duplicate.versions.join("|")));
+}
+
+function changedNodesFromComparison(
+  head: NativeGuardSnapshot,
+  comparison: SnapshotComparison
+): DependencyGraphNode[] {
+  const changedPackageNames = new Set(comparison.changedPackages.map(change => change.packageName));
+  return head.dependencyNodes
+    .filter(node => changedPackageNames.has(node.packageName))
+    .sort((left, right) => left.packageName.localeCompare(right.packageName));
+}
+
+function duplicateFindings(
+  packageName: "react" | "react-native",
+  duplicates: Array<{ packageName: string; versions: string[] }>
+): PrReviewReport["newRisks"] {
+  return duplicates.map(duplicate => ({
+    id: `pr-risk-duplicate-${packageName}`,
+    packageName,
+    severity: "error",
+    status: "red",
+    title: `Duplicate ${packageName} versions introduced`,
+    detail: `${packageName} has multiple versions in the head graph: ${duplicate.versions.join(", ")}.`,
+    affectedContext: { projectKinds: ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"] },
+    confidence: "high",
+    evidence: [],
+    recommendedActions: [
+      {
+        type: "manual-verification",
+        packageName,
+        note: `Resolve duplicate ${packageName} versions before merging.`
+      }
+    ],
+    requiredVerification: ["manual"]
+  }));
+}
+
+function createPrRequiredActions(
+  changedNodes: DependencyGraphNode[],
+  riskCount: number
+): RecommendedAction[] {
+  const actions: RecommendedAction[] = [];
+  if (riskCount > 0) {
+    actions.push({
+      type: "manual-verification",
+      note: "Review new NativeGuard risks before merging this dependency change.",
+      requiresApproval: true
+    });
+  }
+  if (changedNodes.some(node => node.classification === "native-module" || node.classification === "expo-module")) {
+    actions.push({
+      type: "manual-verification",
+      note: "Run native build verification for changed native dependencies.",
+      requiresApproval: false
+    });
+  }
+  return actions;
+}
+
+function createPrVerificationChecklist(
+  changedNodes: DependencyGraphNode[],
+  riskCount: number
+): VerificationType[] {
+  const verification = new Set<VerificationType>();
+  if (changedNodes.some(node => node.classification === "native-module" || node.classification === "expo-module")) {
+    verification.add("expo-doctor");
+    verification.add("android-build");
+    verification.add("ios-build");
+  }
+  if (riskCount > 0) {
+    verification.add("manual");
+  }
+  return Array.from(verification);
+}
+
+function staleSnapshotExceptions(exceptions: LocalException[], now: Date): LocalException[] {
+  return exceptions.filter(exception => isExceptionExpired(exception, now));
+}
+
+function fingerprint(value: unknown): string {
+  return createHash("sha256")
+    .update(stableStringify(value))
+    .digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(item => stableStringify(item)).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | undefined> {
+  const raw = await readTextIfExists(filePath);
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readTextIfExists(filePath: string): Promise<string | undefined> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    throw error;
+  }
+}
+
+async function findUp(start: string, fileName: string): Promise<string | undefined> {
+  let current = path.resolve(start);
+  while (true) {
+    if (await exists(path.join(current, fileName))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function redactProjectProfile(profile: ProjectProfile): ProjectProfile {
+  return {
+    ...profile,
+    root: "<redacted>",
+    ...(profile.workspace
+      ? {
+          workspace: {
+            ...profile.workspace,
+            root: "<redacted>"
+          }
+        }
+      : {})
+  };
 }
 
 function evaluateRules(
@@ -442,8 +1672,14 @@ export type {
   DependencySnapshot,
   DoctorReport,
   Finding,
+  NativeGuardEnvironmentReport,
   NativeGuardLockfile,
+  NativeGuardSnapshot,
+  PackageExplanation,
   PackageManagerName,
+  PrReviewReport,
   ProjectKind,
-  ProjectProfile
+  ProjectProfile,
+  SnapshotComparison,
+  ToolchainContext
 };

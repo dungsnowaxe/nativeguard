@@ -7,10 +7,7 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "references": [
-    { "path": "../schema" },
-    { "path": "../rules" },
-    { "path": "../core" },
-    { "path": "../github-action" }
+    { "path": "../schema" }
   ],
   "include": ["src/**/*.ts"]
 }

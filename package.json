@@ -5,8 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@11.10.0",
   "scripts": {
-    "build": "tsc -b packages/schema packages/rules packages/core packages/cli",
-    "check": "tsc -b packages/schema packages/rules packages/core packages/cli",
+    "build": "tsc -b packages/schema packages/rules packages/core packages/github-action packages/cli",
+    "check": "tsc -b packages/schema packages/rules packages/core packages/github-action packages/cli",
     "test": "pnpm -r --if-present test",
     "validate:rules": "pnpm --filter @nativeguard/rules validate",
     "nativeguard": "node packages/cli/dist/index.js"

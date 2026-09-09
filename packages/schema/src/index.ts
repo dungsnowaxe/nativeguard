@@ -20,6 +20,7 @@ export interface ProjectProfile {
   expoVersion?: string;
   expoSdkMajor?: string;
   reactNativeVersion?: string;
+  newArchitectureEnabled?: boolean;
   hasIosProject: boolean;
   hasAndroidProject: boolean;
 }
@@ -79,6 +80,11 @@ export interface CompatibilityRule {
     reactNative?: string[];
     packageManagers?: PackageManagerName[];
     newArchitecture?: boolean;
+    requiresPackages?: string[];
+  };
+  unless?: {
+    packageName?: string;
+    range: string;
   };
   outcome: StabilityStatus;
   confidence: Confidence;

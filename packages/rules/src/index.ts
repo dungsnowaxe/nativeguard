@@ -9,88 +9,175 @@ export const RULES_PACKAGE = {
   version: "0.0.0"
 } as const;
 
-const EXPO_PREBUILD_SURFACES = ["eas", "local-native"] as const;
+const NATIVE_SURFACES = ["eas", "local-native"] as const;
+const MANAGED_SURFACES = ["eas", "runtime"] as const;
+const EXPO_KINDS = ["expo-prebuild", "expo-go"] as const;
 
 export const bundledRules: CompatibilityRule[] = [
   {
     schemaVersion: RULE_SCHEMA_VERSION,
-    id: "expo-sdk-54-react-native-svg-off-matrix",
-    packageName: "react-native-svg",
-    affectedRange: "15.8.0 - 15.10.x",
+    id: "sdk54-reanimated-requires-worklets-0.5.1",
+    packageName: "react-native-reanimated",
+    affectedRange: ">=4",
     context: {
-      projectKinds: ["expo-prebuild"],
+      projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
-      reactNative: ["0.81.x"],
       packageManagers: ["npm"],
       newArchitecture: true
     },
-    outcome: "accepted-exception",
-    confidence: "medium",
-    summary:
-      "Expo SDK 54 projects may intentionally use an off-matrix react-native-svg version when it fixes Android rendering regressions.",
+    unless: {
+      packageName: "react-native-worklets",
+      range: "0.5.1"
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary: "Expo SDK 54 with Reanimated 4 requires react-native-worklets 0.5.1.",
     issue: {
-      reason: "Expo's default version matrix may rewrite an intentionally selected off-matrix version.",
-      fixedVersion: "15.11.2"
+      reason:
+        "Reanimated 4 on SDK 54 needs the dedicated worklets package at 0.5.1; other worklets versions fail to compile or runtime-load.",
+      fixedVersion: "0.5.1"
     },
     evidence: [
       {
-        type: "manual",
-        summary:
-          "Seed NativeGuard rule based on the product roadmap example for Expo SDK 54 and react-native-svg.",
-        confidence: "medium"
+        type: "docs",
+        url: "https://github.com/expo/fyi/blob/main/expo-54-reanimated.md",
+        summary: "Expo FYI for SDK 54 Reanimated 4 requires react-native-worklets 0.5.1.",
+        confidence: "high"
+      },
+      {
+        type: "github_issue",
+        url: "https://github.com/software-mansion/react-native-reanimated/issues/8432",
+        summary: "Reanimated 4 worklets pairing failures reported against mismatched worklets versions.",
+        confidence: "high"
+      },
+      {
+        type: "github_issue",
+        url: "https://github.com/expo/expo/issues/39980",
+        summary: "Expo SDK 54 issue tracking Reanimated 4 / worklets 0.5.1 as the supported pair.",
+        confidence: "high"
       }
     ],
     remediation: [
       {
-        type: "leave",
-        packageName: "react-native-svg",
-        note: "Leave the intentional off-matrix version in place when it is required for Android rendering fixes."
-      },
-      {
-        type: "exclude",
-        packageName: "react-native-svg",
-        note: "Record the exception and add expo.install.exclude when Expo install would otherwise rewrite the version."
-      },
-      {
-        type: "manual-check",
-        packageName: "react-native-svg",
-        note: "Verify Android release builds when using the off-matrix version."
+        type: "bump",
+        packageName: "react-native-worklets",
+        to: "0.5.1",
+        note: "Install react-native-worklets 0.5.1 alongside Reanimated 4 on SDK 54."
       }
     ],
-    surfaces: [...EXPO_PREBUILD_SURFACES]
+    surfaces: [...NATIVE_SURFACES]
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
-    id: "expo-sdk-54-react-native-pager-view-scroll-lock",
-    packageName: "react-native-pager-view",
-    affectedRange: "<7.0.2",
+    id: "sdk53-ban-reanimated-4",
+    packageName: "react-native-reanimated",
+    affectedRange: ">=4",
     context: {
-      projectKinds: ["expo-prebuild"],
-      expoSdk: ["54"],
-      reactNative: ["0.81.x"],
-      packageManagers: ["npm"],
-      newArchitecture: true
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: ["53"],
+      packageManagers: ["npm"]
     },
     outcome: "risky",
     confidence: "high",
-    summary: "react-native-pager-view before 7.0.2 can ignore disabled swiping once on mount.",
+    summary: "Expo SDK 53 does not support Reanimated 4; stay on the 3.17.x line.",
     issue: {
-      reason:
-        "swipeEnabled={false} can still allow the first tab swipe because older native pager initialization applies scrollEnabled={false} too late.",
-      fixedVersion: "7.0.2"
+      reason: "Reanimated 4 requires a newer Expo/RN pairing than SDK 53 provides.",
+      fixedVersion: "~3.17.4"
     },
     evidence: [
       {
         type: "github_issue",
-        url: "https://github.com/callstack/react-native-pager-view/issues/1028",
-        summary:
-          "Older pager-view releases can apply scrollEnabled={false} too late during native pager initialization.",
+        url: "https://github.com/software-mansion/react-native-reanimated/issues/7457",
+        summary: "Reanimated 4 is not supported on the SDK 53 / RN 0.79 line.",
         confidence: "high"
       },
       {
-        type: "release_note",
-        url: "https://github.com/callstack/react-native-pager-view/releases/tag/v7.0.2",
-        summary: "The pinning plan records 7.0.2 as the first fixed version for this scroll-lock issue.",
+        type: "github_issue",
+        url: "https://github.com/expo/expo/issues/38832",
+        summary: "Expo SDK 53 tracking Reanimated 4 as an unsupported upgrade.",
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "pin",
+        packageName: "react-native-reanimated",
+        to: "~3.17.4",
+        note: "Pin react-native-reanimated to ~3.17.4 on SDK 53 and reject 4.x."
+      }
+    ],
+    surfaces: [...NATIVE_SURFACES]
+  },
+  {
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "sdk54-legacy-arch-reanimated-v3",
+    packageName: "react-native-reanimated",
+    affectedRange: ">=4",
+    context: {
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: ["54"],
+      packageManagers: ["npm"],
+      newArchitecture: false
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary: "SDK 54 with New Architecture disabled should stay on Reanimated v3, not 4.x.",
+    issue: {
+      reason: "Reanimated 4 targets New Architecture; legacy-arch SDK 54 apps should remain on v3.",
+      fixedVersion: "~3.17.4"
+    },
+    evidence: [
+      {
+        type: "docs",
+        url: "https://github.com/expo/fyi/blob/main/expo-54-reanimated.md",
+        summary: "Expo FYI: Reanimated 4 is for New Architecture; legacy arch should keep v3 and exclude 4.x from expo install.",
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "pin",
+        packageName: "react-native-reanimated",
+        to: "~3.17.4",
+        note: "Pin react-native-reanimated to v3 while newArchEnabled is false on SDK 54."
+      },
+      {
+        type: "exclude",
+        packageName: "react-native-reanimated",
+        note: "Add react-native-reanimated to expo.install.exclude so Expo install does not pull 4.x onto a legacy-arch app."
+      }
+    ],
+    surfaces: [...NATIVE_SURFACES]
+  },
+  {
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "pager-view-min-6.7.1-on-rn-079",
+    packageName: "react-native-pager-view",
+    affectedRange: "<6.7.1",
+    context: {
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: ["53"],
+      reactNative: ["0.79.x"],
+      packageManagers: ["npm"]
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary: "react-native-pager-view on RN 0.79 / SDK 53 must be at least 6.7.1.",
+    issue: {
+      reason: "Older pager-view releases crash or fail to build against React Native 0.79.",
+      fixedVersion: "6.7.1"
+    },
+    evidence: [
+      {
+        type: "github_issue",
+        url: "https://github.com/callstack/react-native-pager-view/issues/988",
+        summary: "pager-view versions before 6.7.1 break on RN 0.79.",
+        confidence: "high"
+      },
+      {
+        type: "github_issue",
+        url: "https://github.com/expo/expo/pull/36324",
+        summary: "Expo bumped the SDK 53 pager-view floor to 6.7.1.",
         confidence: "high"
       }
     ],
@@ -98,93 +185,178 @@ export const bundledRules: CompatibilityRule[] = [
       {
         type: "bump",
         packageName: "react-native-pager-view",
-        to: "7.0.2",
-        note: "Use at least 7.0.2 when tab views rely on swipeEnabled={false}."
+        to: "6.7.1",
+        note: "Bump react-native-pager-view to 6.7.1 or later on RN 0.79 / SDK 53."
       }
     ],
-    surfaces: [...EXPO_PREBUILD_SURFACES]
+    surfaces: [...NATIVE_SURFACES]
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
-    id: "expo-sdk-54-sentry-react-native-bundled-7-2",
-    packageName: "@sentry/react-native",
-    affectedRange: "~7.2.0",
+    id: "ban-sentry-expo-on-sdk-ge-50",
+    packageName: "sentry-expo",
+    affectedRange: "*",
     context: {
-      projectKinds: ["expo-prebuild"],
-      expoSdk: ["54"],
-      reactNative: ["0.81.x"],
-      packageManagers: ["npm"],
-      newArchitecture: true
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: [">=50"],
+      packageManagers: ["npm"]
     },
     outcome: "risky",
-    confidence: "medium",
-    summary: "Expo SDK 54 bundled @sentry/react-native 7.2.x misses later SDK-54-compatible fixes.",
+    confidence: "high",
+    summary: "sentry-expo is retired from SDK 50+; migrate to @sentry/react-native.",
     issue: {
-      reason:
-        "The Expo-bundled 7.2.x line misses Firebase Android fixes, duplicate iOS new-architecture crash-report fixes, and EAS symbolication fixes recorded in the pinning plan.",
-      fixedVersion: "7.13.x"
+      reason: "sentry-expo is no longer the supported Sentry entry point starting with Expo SDK 50.",
+      fixedVersion: "@sentry/react-native"
     },
     evidence: [
       {
-        type: "manual",
-        summary:
-          "The dependency pinning plan records Firebase Android fixes, duplicate iOS new-architecture crash reports, and EAS symbolication regressions when downgraded to bundled 7.2.x.",
+        type: "docs",
+        url: "https://expo.dev/changelog/2024-05-07-sdk-51",
+        summary: "Expo changelog: sentry-expo is dropped; use @sentry/react-native.",
+        confidence: "high"
+      },
+      {
+        type: "docs",
+        url: "https://github.com/expo/fyi/blob/main/sentry-expo-migration.md",
+        summary: "Expo FYI migration guide from sentry-expo to @sentry/react-native.",
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "exclude",
+        packageName: "sentry-expo",
+        note: "Remove sentry-expo and migrate to @sentry/react-native on SDK 50+."
+      }
+    ],
+    surfaces: [...MANAGED_SURFACES]
+  },
+  {
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "flash-list-v2-requires-new-arch",
+    packageName: "@shopify/flash-list",
+    affectedRange: ">=2",
+    context: {
+      projectKinds: [...EXPO_KINDS],
+      packageManagers: ["npm"],
+      newArchitecture: false
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary: "FlashList v2 requires New Architecture; pin 1.x when New Architecture is off.",
+    issue: {
+      reason: "@shopify/flash-list 2.x is New Architecture-only.",
+      fixedVersion: "1.x"
+    },
+    evidence: [
+      {
+        type: "github_issue",
+        url: "https://github.com/Shopify/flash-list/issues/1752",
+        summary: "FlashList v2 is documented as New Architecture-only.",
+        confidence: "high"
+      },
+      {
+        type: "docs",
+        url: "https://github.com/Shopify/flash-list",
+        summary: "Shopify FlashList README: v2 requires New Architecture.",
         confidence: "medium"
       }
     ],
     remediation: [
       {
         type: "pin",
-        packageName: "@sentry/react-native",
-        to: "7.13.x",
-        note: "Pin above Expo's bundled 7.2.x version and exclude it from Expo install rewrites."
-      },
-      {
-        type: "exclude",
-        packageName: "@sentry/react-native",
-        note: "Add @sentry/react-native to expo.install.exclude when intentionally staying above the Expo bundle."
+        packageName: "@shopify/flash-list",
+        to: "1.x",
+        note: "Pin @shopify/flash-list to 1.x, or enable New Architecture before using v2."
       }
     ],
-    surfaces: [...EXPO_PREBUILD_SURFACES]
+    surfaces: [...NATIVE_SURFACES]
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
-    id: "expo-sdk-54-react-native-screens-rn-082-floor",
+    id: "sdk54-pin-screens-tilde-4.16",
     packageName: "react-native-screens",
-    affectedRange: ">=4.20.0",
+    affectedRange: "*",
     context: {
-      projectKinds: ["expo-prebuild"],
+      projectKinds: ["expo-go"],
       expoSdk: ["54"],
-      reactNative: ["0.81.x"],
-      packageManagers: ["npm"],
-      newArchitecture: true
+      packageManagers: ["npm"]
+    },
+    unless: {
+      range: "~4.16.0"
     },
     outcome: "risky",
-    confidence: "medium",
-    summary: "react-native-screens 4.20+ is above the Expo SDK 54 / React Native 0.81 ceiling.",
+    confidence: "high",
+    summary: "Expo SDK 54 managed / Expo Go apps should pin react-native-screens to ~4.16.0.",
     issue: {
-      reason:
-        "react-native-screens 4.20+ requires a newer React Native line than Expo SDK 54's React Native 0.81.5 ceiling.",
-      fixedVersion: "4.19.x"
+      reason: "Newer screens releases regress Expo Go / managed SDK 54 navigation.",
+      fixedVersion: "~4.16.0"
     },
     evidence: [
       {
         type: "github_issue",
-        url: "https://github.com/expo/expo/issues/41049",
-        summary:
-          "The dependency pinning plan records SDK 54 native tab icon issues and an RN >=0.82 floor for newer screens releases.",
-        confidence: "medium"
+        url: "https://github.com/software-mansion/react-native-screens/issues/3470",
+        summary: "SDK 54 managed / Go screens regressions around versions newer than 4.16.",
+        confidence: "high"
+      },
+      {
+        type: "github_issue",
+        url: "https://github.com/software-mansion/react-native-screens/issues/3496",
+        summary: "Additional SDK 54 screens pin guidance toward ~4.16.0.",
+        confidence: "high"
       }
     ],
     remediation: [
       {
         type: "pin",
         packageName: "react-native-screens",
-        to: "4.19.x",
-        note: "Stay on 4.19.x while the app is on Expo SDK 54 / React Native 0.81."
+        to: "~4.16.0",
+        note: "Pin react-native-screens to ~4.16.0 on SDK 54 managed / Expo Go projects."
       }
     ],
-    surfaces: [...EXPO_PREBUILD_SURFACES]
+    surfaces: [...MANAGED_SURFACES]
+  },
+  {
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "nativewind-min-4.2.1-with-rngh-sdk54",
+    packageName: "nativewind",
+    affectedRange: "<4.2.1",
+    context: {
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: ["54"],
+      packageManagers: ["npm"],
+      requiresPackages: ["react-native-gesture-handler"]
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary: "SDK 54 apps that use Nativewind with RNGH need nativewind 4.2.1 or later.",
+    issue: {
+      reason: "Nativewind versions before 4.2.1 break when composed with react-native-gesture-handler on SDK 54.",
+      fixedVersion: "4.2.1"
+    },
+    evidence: [
+      {
+        type: "github_issue",
+        url: "https://github.com/nativewind/nativewind/issues/1570",
+        summary: "Nativewind + RNGH breakage before 4.2.1.",
+        confidence: "high"
+      },
+      {
+        type: "github_issue",
+        url: "https://github.com/expo/expo/issues/39833",
+        summary: "Expo SDK 54 report of Nativewind requiring 4.2.1 when RNGH is present.",
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "bump",
+        packageName: "nativewind",
+        to: "4.2.1",
+        note: "Bump nativewind to 4.2.1 or later when using react-native-gesture-handler on SDK 54."
+      }
+    ],
+    surfaces: ["runtime"]
   }
 ];
 

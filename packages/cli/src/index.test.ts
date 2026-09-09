@@ -37,7 +37,7 @@ test("prints doctor JSON and writes lockfile", async () => {
         dependencies: {
           expo: "54.0.0",
           "react-native": "0.81.0",
-          "react-native-svg": "15.10.0"
+          "sentry-expo": "7.2.0"
         }
       },
       null,
@@ -75,9 +75,9 @@ test("prints doctor JSON and writes lockfile", async () => {
       })),
       [
         {
-          packageName: "react-native-svg",
-          installedVersion: "15.10.0",
-          affectedRange: "15.8.0 - 15.10.x"
+          packageName: "sentry-expo",
+          installedVersion: "7.2.0",
+          affectedRange: "*"
         }
       ]
     );
@@ -89,14 +89,9 @@ test("prints doctor JSON and writes lockfile", async () => {
       })),
       [
         {
-          action: "leave",
-          packageName: "react-native-svg",
-          surfaces: ["eas", "local-native"]
-        },
-        {
           action: "exclude",
-          packageName: "react-native-svg",
-          surfaces: ["eas", "local-native"]
+          packageName: "sentry-expo",
+          surfaces: ["eas", "runtime"]
         }
       ]
     );
@@ -114,9 +109,9 @@ test("prints a human recommendations table", async () => {
       {
         private: true,
         dependencies: {
-          expo: "54.0.0",
-          "react-native": "0.81.0",
-          "react-native-pager-view": "6.9.1"
+          expo: "53.0.20",
+          "react-native": "0.79.5",
+          "react-native-pager-view": "6.6.0"
         }
       },
       null,
@@ -133,7 +128,7 @@ test("prints a human recommendations table", async () => {
     const output = await captureStdout(() => main(["doctor"]));
     assert.match(output.stdout, /Recommendations:/);
     assert.match(output.stdout, /Package\s+\|\s+Action\s+\|\s+From\s+\|\s+To\s+\|\s+Surfaces\s+\|\s+Evidence/);
-    assert.match(output.stdout, /react-native-pager-view\s+\|\s+bump\s+\|\s+6\.9\.1\s+\|\s+7\.0\.2\s+\|\s+eas,local-native/);
+    assert.match(output.stdout, /react-native-pager-view\s+\|\s+bump\s+\|\s+6\.6\.0\s+\|\s+6\.7\.1\s+\|\s+eas,local-native/);
     assert.match(output.stdout, /Findings:/);
   } finally {
     process.chdir(previous);
@@ -148,9 +143,9 @@ test("filters doctor rules with --sdk", async () => {
       {
         private: true,
         dependencies: {
-          expo: "54.0.0",
-          "react-native": "0.81.0",
-          "react-native-pager-view": "6.9.1"
+          expo: "53.0.20",
+          "react-native": "0.79.5",
+          "react-native-pager-view": "6.6.0"
         }
       },
       null,
@@ -176,12 +171,12 @@ test("filters doctor rules with --sdk", async () => {
     };
 
     assert.equal(parsed54.project.expoSdkMajor, "54");
-    assert.ok(parsed54.findings.some(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock"));
-    assert.equal(parsed53.project.expoSdkMajor, "53");
     assert.equal(
-      parsed53.findings.some(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock"),
+      parsed54.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
       false
     );
+    assert.equal(parsed53.project.expoSdkMajor, "53");
+    assert.ok(parsed53.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
     assert.equal(
       parsed53.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"),
       false
@@ -199,8 +194,8 @@ test("matches CLI JSON analysis against lockfile-resolved versions", async () =>
       {
         private: true,
         dependencies: {
-          expo: "~54.0.0",
-          "react-native": "0.81.0",
+          expo: "~53.0.0",
+          "react-native": "0.79.5",
           "react-native-pager-view": "^6.0.0"
         }
       },
@@ -215,14 +210,14 @@ test("matches CLI JSON analysis against lockfile-resolved versions", async () =>
       packages: {
         "": {
           dependencies: {
-            expo: "~54.0.0",
-            "react-native": "0.81.0",
+            expo: "~53.0.0",
+            "react-native": "0.79.5",
             "react-native-pager-view": "^6.0.0"
           }
         },
-        "node_modules/expo": { version: "54.0.33" },
-        "node_modules/react-native": { version: "0.81.5" },
-        "node_modules/react-native-pager-view": { version: "6.9.1" }
+        "node_modules/expo": { version: "53.0.20" },
+        "node_modules/react-native": { version: "0.79.5" },
+        "node_modules/react-native-pager-view": { version: "6.6.0" }
       }
     })
   );
@@ -242,12 +237,12 @@ test("matches CLI JSON analysis against lockfile-resolved versions", async () =>
       packageIssues: Array<{ packageName: string; installedVersion: string }>;
     };
 
-    assert.equal(parsed.project.expoSdkMajor, "54");
+    assert.equal(parsed.project.expoSdkMajor, "53");
     assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "^6.0.0");
-    assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.9.1");
+    assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
     assert.equal(
       parsed.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
-      "6.9.1"
+      "6.6.0"
     );
   } finally {
     process.chdir(previous);

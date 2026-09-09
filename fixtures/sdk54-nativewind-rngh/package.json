@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "dependencies": {
+    "expo": "54.0.33",
+    "react-native": "0.81.5",
+    "nativewind": "4.1.23",
+    "react-native-gesture-handler": "2.28.0"
+  }
+}

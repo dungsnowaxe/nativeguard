@@ -152,6 +152,9 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   const hasIosProject = await exists(path.join(root, "ios"));
   const hasAndroidProject = await exists(path.join(root, "android"));
   const packageManager = await detectPackageManager(root);
+  const newArchitectureEnabled = await detectNewArchitectureEnabled(root);
+  const architecture =
+    newArchitectureEnabled === undefined ? {} : { newArchitectureEnabled };
 
   if (expoVersion && (hasIosProject || hasAndroidProject)) {
     return {
@@ -160,6 +163,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
       packageManager,
       expoVersion,
       ...(reactNativeVersion ? { reactNativeVersion } : {}),
+      ...architecture,
       hasIosProject,
       hasAndroidProject
     };
@@ -172,6 +176,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
       packageManager,
       ...(expoVersion ? { expoVersion } : {}),
       reactNativeVersion,
+      ...architecture,
       hasIosProject,
       hasAndroidProject
     };
@@ -184,6 +189,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
       packageManager,
       expoVersion,
       ...(reactNativeVersion ? { reactNativeVersion } : {}),
+      ...architecture,
       hasIosProject,
       hasAndroidProject
     };
@@ -201,6 +207,39 @@ export async function detectPackageManager(root: string): Promise<PackageManager
   if (await exists(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
   if (await exists(path.join(root, "bun.lockb")) || (await exists(path.join(root, "bun.lock")))) return "bun";
   return "unknown";
+}
+
+async function detectNewArchitectureEnabled(root: string): Promise<boolean | undefined> {
+  for (const fileName of ["app.json", "app.config.json"]) {
+    try {
+      const raw = await readFile(path.join(root, fileName), "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      const enabled = newArchitectureFromConfig(parsed);
+      if (enabled !== undefined) return enabled;
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) continue;
+      throw error;
+    }
+  }
+  return undefined;
+}
+
+function newArchitectureFromConfig(value: unknown): boolean | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const expo = asRecord(record.expo) ?? record;
+  if (typeof expo.newArchEnabled === "boolean") return expo.newArchEnabled;
+
+  const android = asRecord(expo.android)?.newArchEnabled;
+  const ios = asRecord(expo.ios)?.newArchEnabled;
+  if (android === false || ios === false) return false;
+  if (android === true || ios === true) return true;
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
 }
 
 async function readPackageJson(root: string): Promise<PackageJson> {
@@ -288,8 +327,10 @@ function evaluateRules(
     const declaredVersion = allDependencies[rule.packageName];
     const installedVersion = snapshot.resolvedVersions?.[rule.packageName] ?? declaredVersion;
     if (!ruleMatchesProfile(rule, profile)) continue;
+    if (!requiredPackagesInstalled(rule, snapshot, allDependencies)) continue;
     if (rule.packageName !== "react-native" && !installedVersion) continue;
     if (installedVersion && !versionMatchesRange(installedVersion, rule.affectedRange)) continue;
+    if (unlessConstraintMatches(rule, snapshot, allDependencies)) continue;
     const severity = rule.outcome === "risky" ? "error" : rule.outcome === "accepted-exception" ? "warning" : "info";
     const issue =
       installedVersion && rule.issue
@@ -457,14 +498,75 @@ function ruleMatchesProfile(rule: CompatibilityRule, profile: ProjectProfile): b
   if (rule.context.packageManagers && !rule.context.packageManagers.includes(profile.packageManager)) return false;
   if (rule.context.expoSdk && !ruleMatchesSdk(rule, profile.expoSdkMajor)) return false;
   if (rule.context.reactNative && !matchesAnyVersionPattern(profile.reactNativeVersion, rule.context.reactNative)) return false;
+  if (rule.context.newArchitecture !== undefined && profile.newArchitectureEnabled !== rule.context.newArchitecture) {
+    return false;
+  }
   return true;
+}
+
+function requiredPackagesInstalled(
+  rule: CompatibilityRule,
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>
+): boolean {
+  const required = rule.context.requiresPackages;
+  if (!required || required.length === 0) return true;
+  return required.every(packageName => Boolean(resolvedOrDeclaredVersion(snapshot, declared, packageName)));
+}
+
+function unlessConstraintMatches(
+  rule: CompatibilityRule,
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>
+): boolean {
+  if (!rule.unless) return false;
+  const packageName = rule.unless.packageName ?? rule.packageName;
+  const version = resolvedOrDeclaredVersion(snapshot, declared, packageName);
+  return Boolean(version && versionMatchesRange(version, rule.unless.range));
+}
+
+function resolvedOrDeclaredVersion(
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>,
+  packageName: string
+): string | undefined {
+  return snapshot.resolvedVersions?.[packageName] ?? declared[packageName];
 }
 
 function ruleMatchesSdk(rule: CompatibilityRule, sdkMajor: string | undefined): boolean {
   const required = rule.context.expoSdk;
   if (!required || required.length === 0) return true;
   if (!sdkMajor) return false;
-  return required.some(pattern => parseExpoSdkMajor(pattern) === sdkMajor);
+  return required.some(pattern => sdkPatternMatches(sdkMajor, pattern));
+}
+
+function sdkPatternMatches(sdkMajor: string, pattern: string): boolean {
+  const trimmed = pattern.trim();
+  const comparator = trimmed.match(/^(<=|>=|<|>)\s*(\d+)/);
+  if (comparator) {
+    const sdk = Number(sdkMajor);
+    const target = Number(comparator[2]);
+    const operator = comparator[1];
+    if (!Number.isFinite(sdk) || !Number.isFinite(target) || !operator) return false;
+    if (operator !== "<" && operator !== "<=" && operator !== ">" && operator !== ">=") {
+      return false;
+    }
+    switch (operator) {
+      case "<":
+        return sdk < target;
+      case "<=":
+        return sdk <= target;
+      case ">":
+        return sdk > target;
+      case ">=":
+        return sdk >= target;
+      default: {
+        const exhaustive: never = operator;
+        return exhaustive;
+      }
+    }
+  }
+  return parseExpoSdkMajor(trimmed) === sdkMajor;
 }
 
 function matchesAnyVersionPattern(version: string | undefined, patterns: string[]): boolean {

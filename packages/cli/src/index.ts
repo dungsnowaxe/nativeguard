@@ -137,8 +137,15 @@ Usage:
   --write-snapshot, --write-lockfile
       Write nativeguard-lock.json (NativeGuard snapshot only).
       Does not mutate npm, Yarn, pnpm, or Bun lockfiles.
+      Preserves acceptedExceptions already recorded in the snapshot.
   --sdk <major>
       Filter rules to this Expo SDK major. Parsed from the project when omitted.
+
+  Accepted leave/exclude findings:
+      Add an acceptedExceptions[] entry to nativeguard-lock.json (package, version,
+      reason, optional ruleId). The next doctor run surfaces those as
+      accepted-exception instead of re-erroring. pin/bump findings still error
+      until the installed version changes.
 `);
 }
 

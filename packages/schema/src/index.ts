@@ -146,6 +146,7 @@ export interface DoctorReport {
   findings: Finding[];
   recommendations: Recommendation[];
   nextActions: string[];
+  acceptedExceptions?: AcceptedException[];
 }
 
 export interface AcceptedException {
@@ -230,6 +231,9 @@ export function validateDoctorReport(value: unknown): ValidationResult {
     });
   }
   if (!Array.isArray(value.nextActions)) errors.push("nextActions must be an array");
+  if (value.acceptedExceptions !== undefined && !Array.isArray(value.acceptedExceptions)) {
+    errors.push("acceptedExceptions must be an array");
+  }
 
   return { valid: errors.length === 0, errors };
 }

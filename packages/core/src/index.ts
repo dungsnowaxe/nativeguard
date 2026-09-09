@@ -5,6 +5,7 @@ import {
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
   isRecommendationAction,
+  type AcceptedException,
   type CompatibilityRule,
   type DependencySnapshot,
   type DoctorReport,
@@ -53,6 +54,8 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     cliVersion: options.cliVersion,
     rulesPackage: RULES_PACKAGE
   };
+  const snapshot = await readNativeGuardLockfile(root);
+  const acceptedExceptions = snapshot?.acceptedExceptions ?? [];
 
   switch (analyzedProfile.kind) {
     case "bare-react-native":
@@ -60,7 +63,8 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
         generatedAt,
         nativeguard,
         project: analyzedProfile,
-        dependencySnapshot
+        dependencySnapshot,
+        acceptedExceptions
       });
     case "expo-prebuild":
     case "expo-go":
@@ -71,7 +75,10 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     }
   }
 
-  const findings = evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot);
+  const findings = applyAcceptedExceptions(
+    evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot),
+    acceptedExceptions
+  );
   const recommendations = createRecommendations(findings, analyzedProfile);
   const summary = summarizeFindings(findings, analyzedProfile.packageManager);
   const packageIssues = findings.flatMap(finding => (finding.issue ? [finding.issue] : []));
@@ -86,7 +93,8 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     packageIssues,
     findings,
     recommendations,
-    nextActions: createNextActions(summary.status, analyzedProfile)
+    nextActions: createNextActions(summary.status, analyzedProfile),
+    acceptedExceptions
   };
 }
 
@@ -97,6 +105,7 @@ export function parseExpoSdkMajor(version: string): string | undefined {
 }
 
 export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: string): Promise<string> {
+  const existing = await readNativeGuardLockfile(rootDir);
   const lockfile: NativeGuardLockfile = {
     schemaVersion: LOCKFILE_SCHEMA_VERSION,
     generatedAt: report.generatedAt,
@@ -106,7 +115,7 @@ export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: st
     dependencySnapshot: report.dependencySnapshot,
     summary: report.summary,
     recommendations: report.recommendations,
-    acceptedExceptions: []
+    acceptedExceptions: report.acceptedExceptions ?? existing?.acceptedExceptions ?? []
   };
 
   const outputPath = path.join(rootDir, "nativeguard-lock.json");
@@ -369,6 +378,58 @@ function evaluateRules(
   return findings;
 }
 
+function applyAcceptedExceptions(findings: Finding[], exceptions: AcceptedException[]): Finding[] {
+  if (exceptions.length === 0) return findings;
+  return findings.map(finding => {
+    if (!findingHasOnlyLeaveOrExcludeRemediation(finding)) return finding;
+    const installedVersion = finding.issue?.installedVersion;
+    if (!installedVersion) return finding;
+    const accepted = exceptions.find(exception =>
+      acceptedExceptionMatches(exception, finding, installedVersion)
+    );
+    if (!accepted) return finding;
+    return {
+      ...finding,
+      status: "accepted-exception",
+      severity: "warning",
+      detail: `${finding.detail} Recorded as an accepted exception: ${accepted.reason}`,
+      ...(finding.issue
+        ? {
+            issue: {
+              ...finding.issue,
+              status: "accepted-exception",
+              severity: "warning"
+            }
+          }
+        : {})
+    };
+  });
+}
+
+function findingHasOnlyLeaveOrExcludeRemediation(finding: Finding): boolean {
+  const actions = finding.remediation.filter(action => isRecommendationAction(action.type));
+  return (
+    actions.length > 0 &&
+    actions.every(action => action.type === "leave" || action.type === "exclude")
+  );
+}
+
+function acceptedExceptionMatches(
+  exception: AcceptedException,
+  finding: Finding,
+  installedVersion: string
+): boolean {
+  if (exception.version !== installedVersion) return false;
+  if (exception.ruleId !== undefined && exception.ruleId !== finding.ruleId) return false;
+  if (exception.findingId !== undefined && exception.findingId !== finding.id) return false;
+  const packageNames = new Set(
+    [finding.packageName, finding.issue?.packageName, ...finding.remediation.map(action => action.packageName)].filter(
+      (name): name is string => Boolean(name)
+    )
+  );
+  return packageNames.has(exception.packageName);
+}
+
 function createPackageIssue(
   rule: CompatibilityRule,
   installedVersion: string,
@@ -421,6 +482,7 @@ function createUnsupportedBareReactNativeReport(options: {
   nativeguard: DoctorReport["nativeguard"];
   project: ProjectProfile;
   dependencySnapshot: DependencySnapshot;
+  acceptedExceptions: AcceptedException[];
 }): DoctorReport {
   const findings: Finding[] = [
     {
@@ -454,7 +516,8 @@ function createUnsupportedBareReactNativeReport(options: {
     packageIssues: [],
     findings,
     recommendations: [],
-    nextActions: createNextActions("unsupported", options.project)
+    nextActions: createNextActions("unsupported", options.project),
+    acceptedExceptions: options.acceptedExceptions
   };
 }
 
@@ -703,7 +766,9 @@ function createNextActions(status: StabilityStatus, profile: ProjectProfile): st
     case "stable":
       return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
     case "accepted-exception":
-      return ["Review accepted exceptions and record them in nativeguard-lock.json when intentional."];
+      return [
+        "Leave/exclude findings listed in nativeguard-lock.json acceptedExceptions are accepted, not new risk. Edit that snapshot by hand; NativeGuard does not mutate package manager lockfiles."
+      ];
     case "risky":
       return ["Review risky findings before upgrading or releasing this app."];
     case "unsupported":

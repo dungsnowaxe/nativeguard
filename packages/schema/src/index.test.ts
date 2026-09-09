@@ -116,3 +116,27 @@ test("validates lockfile shape", () => {
 
   assert.equal(result.valid, true);
 });
+
+test("allows acceptedExceptions on doctor reports", () => {
+  const result = validateDoctorReport({
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: {},
+    dependencySnapshot: {},
+    summary: {},
+    packageIssues: [],
+    findings: [],
+    recommendations: [],
+    nextActions: [],
+    acceptedExceptions: [
+      {
+        packageName: "sentry-expo",
+        version: "7.2.0",
+        reason: "Migration scheduled."
+      }
+    ]
+  });
+
+  assert.equal(result.valid, true);
+});

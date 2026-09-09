@@ -1,45 +1,98 @@
 # NativeGuard
 
-NativeGuard is an offline-first dependency stability CLI for Expo and React Native projects.
+NativeGuard is an **evidence layer** for Expo / React Native dependency decisions. It is not another `expo-doctor`. It does not apply upgrades, rewrite manifests, or mutate npm / Yarn / pnpm / Bun lockfiles. It reads the project, matches curated compatibility rules, and emits `recommendations[]` with an action, evidence URLs, and the surfaces that care (`eas`, `local-native`, `runtime`).
 
-## Install
+Use it to decide **pin, bump, leave, or exclude** — then change the app yourself.
+
+## Dogfood (from this repo)
+
+v1 is local-only. There is no npm publish step. Build, then run the workspace CLI:
 
 ```sh
-pnpm add -D @nativeguard/cli
+pnpm install
+pnpm build
+pnpm nativeguard -- doctor --json
 ```
 
-## Usage
+Equivalent:
+
+```sh
+node packages/cli/dist/index.js doctor --json
+```
+
+`nativeguard doctor` analyzes **the current working directory**. To dogfood a fixture:
+
+```sh
+pnpm build
+(cd fixtures/sentry-expo-sdk54 && node ../../packages/cli/dist/index.js doctor --json)
+(cd fixtures/sdk53-pager-view && node ../../packages/cli/dist/index.js doctor --json)
+```
+
+After `pnpm build`, `pnpm exec nativeguard -- doctor --json` also works from the repo root (the workspace `bin` points at `packages/cli/dist/index.js`).
+
+## Commands
 
 ```sh
 nativeguard doctor
 nativeguard doctor --json
-nativeguard doctor --write-snapshot
 nativeguard doctor --sdk 54
+nativeguard doctor --write-snapshot
 ```
 
-`--sdk` filters rules to that Expo SDK major. If omitted, NativeGuard parses the current Expo major from the project (`package-lock.json` resolved `expo` version when present, otherwise the declared `expo` range).
+| Flag | Meaning |
+| --- | --- |
+| `--json` | Machine-readable report. Frozen `recommendations[]`: `action` is `bump \| pin \| leave \| exclude`, plus `evidence` and `surfaces`. |
+| `--sdk <major>` | Filter rules to that Expo SDK major (`--sdk 54` or `--sdk=54`). If omitted, NativeGuard parses Expo major from `package-lock.json` resolved `expo`, else the declared `expo` range. |
+| `--write-snapshot` | Write `nativeguard-lock.json` (alias: `--write-lockfile`). NativeGuard snapshot only — never npm/Yarn/pnpm/Bun lockfiles. Preserves `acceptedExceptions`. |
 
-`--write-snapshot` (alias: `--write-lockfile`) writes `nativeguard-lock.json`, a NativeGuard snapshot. It never mutates npm, Yarn, pnpm, or Bun lockfiles.
+Bare React Native is detected and reported as `summary.status: "unsupported"`, not stable. Analysis is skipped.
 
-Bare React Native projects are detected but not analyzed. Doctor reports `summary.status: "unsupported"` rather than stable.
+## Remediation ladder
 
-The first version focuses on local analysis and reports. It does not apply fixes, submit PR review comments, require a hosted registry, or deeply analyze user monorepos.
+NativeGuard recommends in this order. It does **not** apply any of them.
+
+1. **pin / bump / leave** — stay on a known-good version, move to the floor/ceiling the evidence names, or leave an off-matrix install as-is when that is the documented choice.
+2. **workaround** — `exclude` (for example `expo.install.exclude`) or an equivalent config change when the package should not be what Expo install would pull.
+3. **patch last** — only if pin/bump/leave and exclude are insufficient. v1 does not generate or apply patches.
+
+Examples of evidence behind the default pack:
+
+- [Expo SDK 54 + Reanimated](https://github.com/expo/fyi/blob/main/expo-54-reanimated.md)
+- [pager-view on RN 0.79](https://github.com/callstack/react-native-pager-view/issues/988)
+- [sentry-expo retirement](https://github.com/expo/fyi/blob/main/sentry-expo-migration.md)
+- [FlashList v2 is New Architecture-only](https://github.com/Shopify/flash-list/issues/1752)
+- [SDK 54 screens pin](https://github.com/software-mansion/react-native-screens/issues/3470)
+
+## Accepted leave / exclude (`nativeguard-lock.json`)
+
+`--write-snapshot` writes a NativeGuard snapshot, not an install lockfile. To accept a **leave** or **exclude** recommendation (keep the current dependency on purpose):
+
+1. Run `nativeguard doctor --write-snapshot`.
+2. Edit `nativeguard-lock.json` and add an `acceptedExceptions[]` entry with `packageName`, `version`, `reason`, and optional `ruleId` / `findingId`.
+3. Re-run `nativeguard doctor`. Matching leave/exclude findings become `accepted-exception` (warning, exit 0) instead of `risky`.
+4. `--write-snapshot` keeps those exceptions. It still does not touch package manager lockfiles.
+
+`pin` / `bump` findings stay `risky` until the installed version actually changes. Do not use `acceptedExceptions` as a substitute for a pin or bump.
+
+```json
+{
+  "acceptedExceptions": [
+    {
+      "packageName": "sentry-expo",
+      "version": "7.2.0",
+      "reason": "Migrating to @sentry/react-native next sprint.",
+      "ruleId": "ban-sentry-expo-on-sdk-ge-50"
+    }
+  ]
+}
+```
 
 ## Contracts
 
-- `nativeguard doctor --json` emits machine-readable JSON with an explicit schema version.
-- Doctor JSON includes `findings`, `packageIssues`, and a frozen `recommendations[]` contract: `action` is `bump | pin | leave | exclude`, plus `evidence` and `surfaces` (`eas | local-native | runtime`). The human report prints that table.
+- `nativeguard doctor --json` includes `findings`, `packageIssues`, `recommendations[]`, and `acceptedExceptions` copied from the snapshot.
 - When `package-lock.json` is present, rules match `packages["node_modules/<name>"].version`. Declared ranges stay in the dependency snapshot for display.
-- `nativeguard-lock.json` stores a NativeGuard stable-state snapshot, including `recommendations[]`. It does not replace npm, Yarn, pnpm, or Bun lockfiles.
+- `nativeguard-lock.json` is a stability snapshot (recommendations + accepted exceptions). It is not a replacement for npm, Yarn, pnpm, or Bun lockfiles.
 
-## Roadmap
+## Out of scope (v1)
 
-- Yarn support
-- pnpm support
-- Bun support
-- user monorepo analysis
-- GitHub Action PR review
-- hosted rules registry
-- MCP and agent integrations
-- safe apply mode
-# nativeguard
+Yarn/pnpm/Bun analysis, apply mode, GitHub Action review, hosted rule ingest, Expo compatibility-table ingest, and package-lock mutation.

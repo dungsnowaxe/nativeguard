@@ -4,6 +4,7 @@ import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
+  isRecommendationAction,
   type CompatibilityRule,
   type DependencySnapshot,
   type DoctorReport,
@@ -13,6 +14,8 @@ import {
   type PackageManagerName,
   type ProjectKind,
   type ProjectProfile,
+  type Recommendation,
+  type RecommendationSurface,
   type StabilityStatus,
   validateLockfile
 } from "@nativeguard/schema";
@@ -30,6 +33,7 @@ export interface AnalyzeOptions {
   rootDir: string;
   cliVersion: string;
   now?: Date;
+  sdk?: string;
 }
 
 interface PackageJson {
@@ -42,8 +46,11 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const packageJson = await readPackageJson(root);
   const profile = await detectProjectProfile(root, packageJson);
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
-  const findings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
-  const summary = summarizeFindings(findings, profile.packageManager);
+  const expoSdkMajor = resolveExpoSdkMajor(options.sdk, dependencySnapshot, profile);
+  const analyzedProfile = expoSdkMajor ? { ...profile, expoSdkMajor } : profile;
+  const findings = evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot);
+  const recommendations = createRecommendations(findings, analyzedProfile);
+  const summary = summarizeFindings(findings, analyzedProfile.packageManager);
   const packageIssues = findings.flatMap(finding => (finding.issue ? [finding.issue] : []));
 
   return {
@@ -53,13 +60,20 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
       cliVersion: options.cliVersion,
       rulesPackage: RULES_PACKAGE
     },
-    project: profile,
+    project: analyzedProfile,
     dependencySnapshot,
     summary,
     packageIssues,
     findings,
-    nextActions: createNextActions(summary.status, profile.packageManager)
+    recommendations,
+    nextActions: createNextActions(summary.status, analyzedProfile.packageManager)
   };
+}
+
+export function parseExpoSdkMajor(version: string): string | undefined {
+  const normalized = version.trim().replace(/^[~^=v]+/, "");
+  const match = normalized.match(/^(\d+)/);
+  return match?.[1];
 }
 
 export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: string): Promise<string> {
@@ -181,23 +195,42 @@ async function readPackageJson(root: string): Promise<PackageJson> {
 }
 
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {
-  const lockfile = await readNpmLockfile(root);
+  const npmLockfile = await readNpmLockfile(root);
   return {
     dependencies: packageJson.dependencies ?? {},
     devDependencies: packageJson.devDependencies ?? {},
-    ...(lockfile ? { lockfile } : {})
+    ...(npmLockfile?.resolvedVersions && Object.keys(npmLockfile.resolvedVersions).length > 0
+      ? { resolvedVersions: npmLockfile.resolvedVersions }
+      : {}),
+    ...(npmLockfile?.lockfile ? { lockfile: npmLockfile.lockfile } : {})
   };
 }
 
-async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfile"]> {
+interface NpmLockfilePackage {
+  version?: string;
+}
+
+interface ParsedNpmLockfile {
+  lockfile?: DependencySnapshot["lockfile"];
+  resolvedVersions?: Record<string, string>;
+}
+
+async function readNpmLockfile(root: string): Promise<ParsedNpmLockfile | undefined> {
   const lockfilePath = path.join(root, "package-lock.json");
   try {
     const raw = await readFile(lockfilePath, "utf8");
-    const parsed = JSON.parse(raw) as { lockfileVersion?: number; packages?: Record<string, unknown> };
+    const parsed = JSON.parse(raw) as {
+      lockfileVersion?: number;
+      packages?: Record<string, NpmLockfilePackage>;
+    };
+    const resolvedVersions = collectResolvedVersions(parsed.packages ?? {});
     return {
-      path: "package-lock.json",
-      ...(parsed.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
-      packageCount: parsed.packages ? Object.keys(parsed.packages).length : 0
+      lockfile: {
+        path: "package-lock.json",
+        ...(parsed.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
+        packageCount: parsed.packages ? Object.keys(parsed.packages).length : 0
+      },
+      ...(Object.keys(resolvedVersions).length > 0 ? { resolvedVersions } : {})
     };
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
@@ -205,6 +238,18 @@ async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfi
     }
     throw error;
   }
+}
+
+function collectResolvedVersions(packages: Record<string, NpmLockfilePackage>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(packages)) {
+    const match = key.match(/^node_modules\/(@[^/]+\/[^/]+|[^/]+)$/);
+    const packageName = match?.[1];
+    if (packageName && value.version) {
+      resolved[packageName] = value.version;
+    }
+  }
+  return resolved;
 }
 
 function evaluateRules(
@@ -219,7 +264,8 @@ function evaluateRules(
   const findings: Finding[] = [];
 
   for (const rule of rules) {
-    const installedVersion = allDependencies[rule.packageName];
+    const declaredVersion = allDependencies[rule.packageName];
+    const installedVersion = snapshot.resolvedVersions?.[rule.packageName] ?? declaredVersion;
     if (!ruleMatchesProfile(rule, profile)) continue;
     if (rule.packageName !== "react-native" && !installedVersion) continue;
     if (installedVersion && !versionMatchesRange(installedVersion, rule.affectedRange)) continue;
@@ -283,12 +329,77 @@ function createPackageIssue(
   };
 }
 
+function createRecommendations(findings: Finding[], profile: ProjectProfile): Recommendation[] {
+  const surfaces = surfacesForProject(profile.kind);
+  const recommendations: Recommendation[] = [];
+
+  for (const finding of findings) {
+    for (const remediation of finding.remediation) {
+      if (!isRecommendationAction(remediation.type)) continue;
+      recommendations.push({
+        action: remediation.type,
+        packageName: remediation.packageName ?? finding.packageName ?? finding.ruleId ?? finding.id,
+        evidence: finding.evidence,
+        surfaces,
+        ...(finding.issue?.installedVersion ? { from: finding.issue.installedVersion } : {}),
+        ...(remediation.to ? { to: remediation.to } : {}),
+        ...(remediation.note ? { note: remediation.note } : {}),
+        ...(finding.ruleId ? { ruleId: finding.ruleId } : {})
+      });
+    }
+  }
+
+  return recommendations;
+}
+
+function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {
+  switch (kind) {
+    case "expo-prebuild":
+      return ["eas", "local-native"];
+    case "expo-go":
+      return ["runtime"];
+    case "bare-react-native":
+      return ["local-native"];
+    default: {
+      const exhaustive: never = kind;
+      return exhaustive;
+    }
+  }
+}
+
+function resolveExpoSdkMajor(
+  sdkFlag: string | undefined,
+  snapshot: DependencySnapshot,
+  profile: ProjectProfile
+): string | undefined {
+  if (sdkFlag !== undefined) {
+    const parsed = parseExpoSdkMajor(sdkFlag);
+    if (!parsed) {
+      throw new NativeGuardError(
+        `Invalid Expo SDK value "${sdkFlag}". Expected a major version such as 54.`,
+        "INVALID_SDK"
+      );
+    }
+    return parsed;
+  }
+
+  const expoVersion = snapshot.resolvedVersions?.expo ?? profile.expoVersion;
+  return expoVersion ? parseExpoSdkMajor(expoVersion) : undefined;
+}
+
 function ruleMatchesProfile(rule: CompatibilityRule, profile: ProjectProfile): boolean {
   if (!rule.context.projectKinds.includes(profile.kind)) return false;
   if (rule.context.packageManagers && !rule.context.packageManagers.includes(profile.packageManager)) return false;
-  if (rule.context.expoSdk && !matchesAnyVersionPattern(profile.expoVersion, rule.context.expoSdk)) return false;
+  if (rule.context.expoSdk && !ruleMatchesSdk(rule, profile.expoSdkMajor)) return false;
   if (rule.context.reactNative && !matchesAnyVersionPattern(profile.reactNativeVersion, rule.context.reactNative)) return false;
   return true;
+}
+
+function ruleMatchesSdk(rule: CompatibilityRule, sdkMajor: string | undefined): boolean {
+  const required = rule.context.expoSdk;
+  if (!required || required.length === 0) return true;
+  if (!sdkMajor) return false;
+  return required.some(pattern => parseExpoSdkMajor(pattern) === sdkMajor);
 }
 
 function matchesAnyVersionPattern(version: string | undefined, patterns: string[]): boolean {
@@ -445,5 +556,6 @@ export type {
   NativeGuardLockfile,
   PackageManagerName,
   ProjectKind,
-  ProjectProfile
+  ProjectProfile,
+  Recommendation
 };

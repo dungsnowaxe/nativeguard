@@ -40,6 +40,11 @@ export const bundledRules: CompatibilityRule[] = [
     ],
     remediation: [
       {
+        type: "leave",
+        packageName: "react-native-svg",
+        note: "Leave the intentional off-matrix version in place when it is required for Android rendering fixes."
+      },
+      {
         type: "exclude",
         packageName: "react-native-svg",
         note: "Record the exception and add expo.install.exclude when Expo install would otherwise rewrite the version."

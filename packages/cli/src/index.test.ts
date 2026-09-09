@@ -52,9 +52,10 @@ test("prints doctor JSON and writes lockfile", async () => {
   process.chdir(root);
   try {
     const output = await captureStdout(() => main(["doctor", "--json", "--write-lockfile"]));
-    assert.equal(output.exitCode, 0);
+    assert.equal(output.exitCode, 1);
     const parsed = parseCapturedJson(output.stdout) as {
       project: { kind: string; expoSdkMajor?: string };
+      summary: { status: string };
       packageIssues: Array<{ packageName: string; installedVersion: string; affectedRange: string }>;
       findings: Array<{ ruleId?: string }>;
       recommendations: Array<{
@@ -66,6 +67,7 @@ test("prints doctor JSON and writes lockfile", async () => {
     };
     assert.equal(parsed.project.kind, "expo-prebuild");
     assert.equal(parsed.project.expoSdkMajor, "54");
+    assert.equal(parsed.summary.status, "risky");
     assert.ok(parsed.findings.length > 0);
     assert.deepEqual(
       parsed.packageIssues.map(issue => ({
@@ -186,46 +188,10 @@ test("filters doctor rules with --sdk", async () => {
   }
 });
 
-test("matches CLI JSON analysis against lockfile-resolved versions", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-lock-"));
-  await writeFile(
-    path.join(root, "package.json"),
-    JSON.stringify(
-      {
-        private: true,
-        dependencies: {
-          expo: "~53.0.0",
-          "react-native": "0.79.5",
-          "react-native-pager-view": "^6.0.0"
-        }
-      },
-      null,
-      2
-    )
-  );
-  await writeFile(
-    path.join(root, "package-lock.json"),
-    JSON.stringify({
-      lockfileVersion: 3,
-      packages: {
-        "": {
-          dependencies: {
-            expo: "~53.0.0",
-            "react-native": "0.79.5",
-            "react-native-pager-view": "^6.0.0"
-          }
-        },
-        "node_modules/expo": { version: "53.0.20" },
-        "node_modules/react-native": { version: "0.79.5" },
-        "node_modules/react-native-pager-view": { version: "6.6.0" }
-      }
-    })
-  );
-  await mkdir(path.join(root, "ios"));
-  await mkdir(path.join(root, "android"));
-
+test("matches doctor JSON against npm resolved package versions", async () => {
+  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/sdk53-pager-view");
   const previous = process.cwd();
-  process.chdir(root);
+  process.chdir(fixtureRoot);
   try {
     const output = await captureStdout(() => main(["doctor", "--json"]));
     const parsed = parseCapturedJson(output.stdout) as {
@@ -238,7 +204,7 @@ test("matches CLI JSON analysis against lockfile-resolved versions", async () =>
     };
 
     assert.equal(parsed.project.expoSdkMajor, "53");
-    assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "^6.0.0");
+    assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "6.6.0");
     assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
     assert.equal(
       parsed.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,

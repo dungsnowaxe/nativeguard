@@ -80,7 +80,7 @@ test("analyzes project and writes lockfile", async () => {
   assert.equal(report.project.kind, "expo-prebuild");
   assert.equal(report.project.expoSdkMajor, "54");
   assert.equal(report.schemaVersion, "1.0.0");
-  assert.ok(report.findings.length >= 1);
+  assert.ok(Array.isArray(report.findings));
   assert.ok(Array.isArray(report.recommendations));
 
   const lockfilePath = await writeNativeGuardLockfile(report, root);
@@ -88,6 +88,7 @@ test("analyzes project and writes lockfile", async () => {
 
   const lockfile = await readNativeGuardLockfile(root);
   assert.equal(lockfile?.schemaVersion, "1.0.0");
+  assert.ok(Array.isArray(lockfile?.recommendations));
 });
 
 test("analyzes the Expo prebuild issue-version fixture", async () => {
@@ -137,12 +138,6 @@ test("analyzes the Expo prebuild issue-version fixture", async () => {
         installedVersion: "4.20.0",
         affectedRange: ">=4.20.0",
         fixedVersion: "4.19.x"
-      },
-      {
-        packageName: "@legendapp/list",
-        installedVersion: "2.0.0",
-        affectedRange: "2.x",
-        fixedVersion: "3.0.6"
       }
     ]
   );
@@ -151,13 +146,19 @@ test("analyzes the Expo prebuild issue-version fixture", async () => {
   assert.deepEqual(
     report.findings.map(finding => finding.ruleId).sort(),
     [
-      "expo-prebuild-new-architecture-manual-check",
       "expo-sdk-54-react-native-pager-view-scroll-lock",
       "expo-sdk-54-react-native-screens-rn-082-floor",
       "expo-sdk-54-react-native-svg-off-matrix",
-      "expo-sdk-54-sentry-react-native-bundled-7-2",
-      "legendapp-list-v2-react-native-api-migration"
+      "expo-sdk-54-sentry-react-native-bundled-7-2"
     ].sort()
+  );
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"),
+    false
+  );
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "expo-prebuild-new-architecture-manual-check"),
+    false
   );
   assert.equal(report.summary.status, "risky");
   assert.deepEqual(
@@ -203,12 +204,6 @@ test("analyzes the Expo prebuild issue-version fixture", async () => {
         packageName: "react-native-screens",
         to: "4.19.x",
         surfaces: ["eas", "local-native"]
-      },
-      {
-        action: "bump",
-        packageName: "@legendapp/list",
-        to: "3.0.6",
-        surfaces: ["eas", "local-native"]
       }
     ]
   );
@@ -229,8 +224,7 @@ test("filters SDK-scoped rules by the current Expo major", async () => {
     dependencies: {
       expo: "54.0.33",
       "react-native": "0.81.5",
-      "react-native-pager-view": "6.9.1",
-      "@legendapp/list": "2.0.0"
+      "react-native-pager-view": "6.9.1"
     },
     directories: ["ios", "android"],
     lockfile: "npm"
@@ -256,8 +250,29 @@ test("filters SDK-scoped rules by the current Expo major", async () => {
     sdk53.findings.some(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock"),
     false
   );
-  assert.ok(sdk53.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"));
-  assert.ok(sdk53.recommendations.some(recommendation => recommendation.packageName === "@legendapp/list"));
+  assert.equal(
+    sdk53.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"),
+    false
+  );
+});
+
+test("reports bare React Native as unsupported without analyzing or marking stable", async () => {
+  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/bare-react-native");
+  const report = await analyzeProject({
+    rootDir: fixtureRoot,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-09T00:00:00.000Z")
+  });
+
+  assert.equal(report.project.kind, "bare-react-native");
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
+  assert.deepEqual(report.packageIssues, []);
+  assert.deepEqual(report.recommendations, []);
+  assert.equal(report.findings.length, 1);
+  assert.equal(report.findings[0]?.status, "unsupported");
+  assert.match(report.findings[0]?.detail ?? "", /skipped compatibility analysis/);
+  assert.match(report.nextActions[0] ?? "", /not supported/);
 });
 
 test("matches rules against npm lockfile-resolved versions and keeps declared ranges", async () => {

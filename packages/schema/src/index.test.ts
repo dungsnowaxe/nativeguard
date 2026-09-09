@@ -110,6 +110,7 @@ test("validates lockfile shape", () => {
     packageManager: "npm",
     dependencySnapshot: {},
     summary: {},
+    recommendations: [],
     acceptedExceptions: []
   });
 

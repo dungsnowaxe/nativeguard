@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { main } from "./index.js";
@@ -20,7 +21,7 @@ test("returns non-zero for unsupported projects", async () => {
   try {
     const output = await captureStdout(() => main(["doctor", "--json"]));
     assert.equal(output.exitCode, 1);
-    assert.doesNotThrow(() => JSON.parse(output.stdout));
+    assert.doesNotThrow(() => parseCapturedJson(output.stdout));
   } finally {
     process.chdir(previous);
   }
@@ -52,7 +53,7 @@ test("prints doctor JSON and writes lockfile", async () => {
   try {
     const output = await captureStdout(() => main(["doctor", "--json", "--write-lockfile"]));
     assert.equal(output.exitCode, 0);
-    const parsed = JSON.parse(output.stdout) as {
+    const parsed = parseCapturedJson(output.stdout) as {
       project: { kind: string; expoSdkMajor?: string };
       packageIssues: Array<{ packageName: string; installedVersion: string; affectedRange: string }>;
       findings: Array<{ ruleId?: string }>;
@@ -149,8 +150,7 @@ test("filters doctor rules with --sdk", async () => {
         dependencies: {
           expo: "54.0.0",
           "react-native": "0.81.0",
-          "react-native-pager-view": "6.9.1",
-          "@legendapp/list": "2.0.0"
+          "react-native-pager-view": "6.9.1"
         }
       },
       null,
@@ -166,11 +166,11 @@ test("filters doctor rules with --sdk", async () => {
   try {
     const sdk54 = await captureStdout(() => main(["doctor", "--json", "--sdk", "54"]));
     const sdk53 = await captureStdout(() => main(["doctor", "--json", "--sdk=53"]));
-    const parsed54 = JSON.parse(sdk54.stdout) as {
+    const parsed54 = parseCapturedJson(sdk54.stdout) as {
       project: { expoSdkMajor?: string };
       findings: Array<{ ruleId?: string }>;
     };
-    const parsed53 = JSON.parse(sdk53.stdout) as {
+    const parsed53 = parseCapturedJson(sdk53.stdout) as {
       project: { expoSdkMajor?: string };
       findings: Array<{ ruleId?: string }>;
     };
@@ -182,7 +182,10 @@ test("filters doctor rules with --sdk", async () => {
       parsed53.findings.some(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock"),
       false
     );
-    assert.ok(parsed53.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"));
+    assert.equal(
+      parsed53.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"),
+      false
+    );
   } finally {
     process.chdir(previous);
   }
@@ -230,7 +233,7 @@ test("matches CLI JSON analysis against lockfile-resolved versions", async () =>
   process.chdir(root);
   try {
     const output = await captureStdout(() => main(["doctor", "--json"]));
-    const parsed = JSON.parse(output.stdout) as {
+    const parsed = parseCapturedJson(output.stdout) as {
       project: { expoSdkMajor?: string };
       dependencySnapshot: {
         dependencies: Record<string, string>;
@@ -251,6 +254,61 @@ test("matches CLI JSON analysis against lockfile-resolved versions", async () =>
   }
 });
 
+test("reports the bare React Native fixture as unsupported, not stable", async () => {
+  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/bare-react-native");
+  const previous = process.cwd();
+  process.chdir(fixtureRoot);
+  try {
+    const output = await captureStdout(() => main(["doctor", "--json"]));
+    assert.equal(output.exitCode, 1);
+    const parsed = parseCapturedJson(output.stdout) as {
+      project: { kind: string };
+      summary: { status: string };
+      packageIssues: unknown[];
+      findings: Array<{ status?: string; title?: string }>;
+    };
+    assert.equal(parsed.project.kind, "bare-react-native");
+    assert.equal(parsed.summary.status, "unsupported");
+    assert.notEqual(parsed.summary.status, "stable");
+    assert.deepEqual(parsed.packageIssues, []);
+    assert.equal(parsed.findings[0]?.status, "unsupported");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("writes a NativeGuard snapshot with --write-snapshot without changing package-lock.json", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-snapshot-"));
+  const packageLock = JSON.stringify({ lockfileVersion: 3, packages: {} });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        dependencies: { expo: "54.0.0", "react-native": "0.81.0" }
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(path.join(root, "package-lock.json"), packageLock);
+  await mkdir(path.join(root, "ios"));
+
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const output = await captureStdout(() => main(["doctor", "--json", "--write-snapshot"]));
+    assert.doesNotThrow(() => parseCapturedJson(output.stdout));
+    const snapshot = JSON.parse(await readFile(path.join(root, "nativeguard-lock.json"), "utf8")) as {
+      recommendations?: unknown[];
+    };
+    assert.ok(Array.isArray(snapshot.recommendations));
+    assert.equal(await readFile(path.join(root, "package-lock.json"), "utf8"), packageLock);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";
@@ -265,4 +323,13 @@ async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: nu
   } finally {
     process.stdout.write = originalWrite;
   }
+}
+
+function parseCapturedJson(stdout: string): unknown {
+  const marker = stdout.lastIndexOf('"schemaVersion"');
+  const start = marker === -1 ? stdout.indexOf("{") : stdout.lastIndexOf("{", marker);
+  const end = stdout.lastIndexOf("}");
+  assert.notEqual(start, -1);
+  assert.ok(end > start);
+  return JSON.parse(stdout.slice(start, end + 1));
 }

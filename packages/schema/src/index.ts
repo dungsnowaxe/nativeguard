@@ -47,6 +47,7 @@ export interface RemediationAction {
   packageName?: string;
   to?: string;
   note: string;
+  surfaces?: RecommendationSurface[];
 }
 
 export interface Recommendation {
@@ -85,6 +86,7 @@ export interface CompatibilityRule {
   issue?: CompatibilityIssueMetadata;
   evidence: EvidenceRecord[];
   remediation: RemediationAction[];
+  surfaces?: RecommendationSurface[];
 }
 
 export interface PackageIssue {
@@ -115,6 +117,7 @@ export interface Finding {
   issue?: PackageIssue;
   evidence: EvidenceRecord[];
   remediation: RemediationAction[];
+  surfaces?: RecommendationSurface[];
 }
 
 export interface DoctorReport {
@@ -157,6 +160,7 @@ export interface NativeGuardLockfile {
   packageManager: PackageManagerName;
   dependencySnapshot: DependencySnapshot;
   summary: DoctorReport["summary"];
+  recommendations?: Recommendation[];
   acceptedExceptions: AcceptedException[];
 }
 
@@ -190,6 +194,9 @@ export function validateCompatibilityRule(value: unknown): ValidationResult {
   }
   if (!Array.isArray(value.remediation)) {
     errors.push("remediation must be an array");
+  }
+  if (value.surfaces !== undefined && (!Array.isArray(value.surfaces) || !value.surfaces.every(isRecommendationSurface))) {
+    errors.push(`surfaces must contain only ${RECOMMENDATION_SURFACES.join("|")}`);
   }
 
   return { valid: errors.length === 0, errors };
@@ -270,6 +277,9 @@ export function validateLockfile(value: unknown): ValidationResult {
   if (!isRecord(value.dependencySnapshot)) errors.push("dependencySnapshot must be an object");
   if (!isRecord(value.summary)) errors.push("summary must be an object");
   if (!Array.isArray(value.acceptedExceptions)) errors.push("acceptedExceptions must be an array");
+  if (value.recommendations !== undefined && !Array.isArray(value.recommendations)) {
+    errors.push("recommendations must be an array");
+  }
 
   return { valid: errors.length === 0, errors };
 }

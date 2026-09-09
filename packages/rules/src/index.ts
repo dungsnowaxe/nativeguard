@@ -9,6 +9,8 @@ export const RULES_PACKAGE = {
   version: "0.0.0"
 } as const;
 
+const EXPO_PREBUILD_SURFACES = ["eas", "local-native"] as const;
+
 export const bundledRules: CompatibilityRule[] = [
   {
     schemaVersion: RULE_SCHEMA_VERSION,
@@ -54,7 +56,8 @@ export const bundledRules: CompatibilityRule[] = [
         packageName: "react-native-svg",
         note: "Verify Android release builds when using the off-matrix version."
       }
-    ]
+    ],
+    surfaces: [...EXPO_PREBUILD_SURFACES]
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
@@ -98,7 +101,8 @@ export const bundledRules: CompatibilityRule[] = [
         to: "7.0.2",
         note: "Use at least 7.0.2 when tab views rely on swipeEnabled={false}."
       }
-    ]
+    ],
+    surfaces: [...EXPO_PREBUILD_SURFACES]
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
@@ -140,7 +144,8 @@ export const bundledRules: CompatibilityRule[] = [
         packageName: "@sentry/react-native",
         note: "Add @sentry/react-native to expo.install.exclude when intentionally staying above the Expo bundle."
       }
-    ]
+    ],
+    surfaces: [...EXPO_PREBUILD_SURFACES]
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
@@ -178,42 +183,12 @@ export const bundledRules: CompatibilityRule[] = [
         to: "4.19.x",
         note: "Stay on 4.19.x while the app is on Expo SDK 54 / React Native 0.81."
       }
-    ]
-  },
-  {
-    schemaVersion: RULE_SCHEMA_VERSION,
-    id: "legendapp-list-v2-react-native-api-migration",
-    packageName: "@legendapp/list",
-    affectedRange: "2.x",
-    context: {
-      projectKinds: ["expo-prebuild"],
-      packageManagers: ["npm"]
-    },
-    outcome: "risky",
-    confidence: "medium",
-    summary: "@legendapp/list v2 uses APIs/imports that the pinning plan migrated away from.",
-    issue: {
-      reason:
-        "@legendapp/list v2 uses the old import path and removed list APIs that the app migrated away from.",
-      fixedVersion: "3.0.6"
-    },
-    evidence: [
-      {
-        type: "manual",
-        summary:
-          "The dependency pinning plan records a major migration to 3.0.6 with React Native imports moved to @legendapp/list/react-native and removed v2 sizing/sticky APIs.",
-        confidence: "medium"
-      }
     ],
-    remediation: [
-      {
-        type: "bump",
-        packageName: "@legendapp/list",
-        to: "3.0.6",
-        note: "Use the v3 React Native import path and replace removed v2 list APIs."
-      }
-    ]
-  },
+    surfaces: [...EXPO_PREBUILD_SURFACES]
+  }
+];
+
+export const optionalRules: CompatibilityRule[] = [
   {
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "expo-prebuild-new-architecture-manual-check",
@@ -231,7 +206,7 @@ export const bundledRules: CompatibilityRule[] = [
     evidence: [
       {
         type: "manual",
-        summary: "Seed rule used to ensure Expo prebuild projects surface native compatibility context.",
+        summary: "Low-confidence optional rule. Not loaded in the default pack.",
         confidence: "low"
       }
     ],
@@ -250,7 +225,7 @@ export function loadBundledRules(): CompatibilityRule[] {
 
 export function validateBundledRules(): string[] {
   const errors: string[] = [];
-  for (const rule of bundledRules) {
+  for (const rule of [...bundledRules, ...optionalRules]) {
     const result = validateCompatibilityRule(rule);
     if (!result.valid) {
       errors.push(`${rule.id}: ${result.errors.join(", ")}`);

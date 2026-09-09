@@ -4,7 +4,8 @@ import {
   validateDoctorReport,
   type Recommendation,
   type RecommendationAction,
-  type RecommendationSurface
+  type RecommendationSurface,
+  type StabilityStatus
 } from "@nativeguard/schema";
 
 const CLI_VERSION = "0.0.0";
@@ -60,7 +61,7 @@ async function runDoctor(args: string[]): Promise<number> {
       printReport(report, writeLockfile);
     }
 
-    return report.summary.status === "risky" ? 1 : 0;
+    return exitCodeForStatus(report.summary.status);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (json) {
@@ -95,7 +96,7 @@ function parseDoctorArgs(args: string[]): { json: boolean; writeLockfile: boolea
       json = true;
       continue;
     }
-    if (arg === "--write-lockfile") {
+    if (arg === "--write-snapshot" || arg === "--write-lockfile") {
       writeLockfile = true;
       continue;
     }
@@ -131,8 +132,29 @@ function printHelp(): void {
 
 Usage:
   nativeguard --version
-  nativeguard doctor [--json] [--write-lockfile] [--sdk <major>]
+  nativeguard doctor [--json] [--write-snapshot] [--sdk <major>]
+
+  --write-snapshot, --write-lockfile
+      Write nativeguard-lock.json (NativeGuard snapshot only).
+      Does not mutate npm, Yarn, pnpm, or Bun lockfiles.
+  --sdk <major>
+      Filter rules to this Expo SDK major. Parsed from the project when omitted.
 `);
+}
+
+function exitCodeForStatus(status: StabilityStatus): number {
+  switch (status) {
+    case "stable":
+    case "accepted-exception":
+      return 0;
+    case "risky":
+    case "unsupported":
+      return 1;
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }
 
 function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLockfile: boolean): void {
@@ -167,7 +189,7 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
 
   if (wroteLockfile) {
     console.log("");
-    console.log("Wrote nativeguard-lock.json");
+    console.log("Wrote nativeguard-lock.json (NativeGuard snapshot; package manager lockfiles were not changed).");
   }
 }
 

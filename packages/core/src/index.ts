@@ -48,6 +48,29 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
   const expoSdkMajor = resolveExpoSdkMajor(options.sdk, dependencySnapshot, profile);
   const analyzedProfile = expoSdkMajor ? { ...profile, expoSdkMajor } : profile;
+  const generatedAt = (options.now ?? new Date()).toISOString();
+  const nativeguard = {
+    cliVersion: options.cliVersion,
+    rulesPackage: RULES_PACKAGE
+  };
+
+  switch (analyzedProfile.kind) {
+    case "bare-react-native":
+      return createUnsupportedBareReactNativeReport({
+        generatedAt,
+        nativeguard,
+        project: analyzedProfile,
+        dependencySnapshot
+      });
+    case "expo-prebuild":
+    case "expo-go":
+      break;
+    default: {
+      const exhaustive: never = analyzedProfile.kind;
+      throw new NativeGuardError(`Unhandled project kind: ${String(exhaustive)}`, "UNSUPPORTED_PROJECT");
+    }
+  }
+
   const findings = evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot);
   const recommendations = createRecommendations(findings, analyzedProfile);
   const summary = summarizeFindings(findings, analyzedProfile.packageManager);
@@ -55,18 +78,15 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
 
   return {
     schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
-    generatedAt: (options.now ?? new Date()).toISOString(),
-    nativeguard: {
-      cliVersion: options.cliVersion,
-      rulesPackage: RULES_PACKAGE
-    },
+    generatedAt,
+    nativeguard,
     project: analyzedProfile,
     dependencySnapshot,
     summary,
     packageIssues,
     findings,
     recommendations,
-    nextActions: createNextActions(summary.status, analyzedProfile.packageManager)
+    nextActions: createNextActions(summary.status, analyzedProfile)
   };
 }
 
@@ -85,6 +105,7 @@ export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: st
     packageManager: report.project.packageManager,
     dependencySnapshot: report.dependencySnapshot,
     summary: report.summary,
+    recommendations: report.recommendations,
     acceptedExceptions: []
   };
 
@@ -286,7 +307,8 @@ function evaluateRules(
       confidence: rule.confidence,
       ...(issue ? { issue } : {}),
       evidence: rule.evidence,
-      remediation: rule.remediation
+      remediation: rule.remediation,
+      ...(rule.surfaces ? { surfaces: rule.surfaces } : {})
     });
   }
 
@@ -330,12 +352,13 @@ function createPackageIssue(
 }
 
 function createRecommendations(findings: Finding[], profile: ProjectProfile): Recommendation[] {
-  const surfaces = surfacesForProject(profile.kind);
+  const fallbackSurfaces = surfacesForProject(profile.kind);
   const recommendations: Recommendation[] = [];
 
   for (const finding of findings) {
     for (const remediation of finding.remediation) {
       if (!isRecommendationAction(remediation.type)) continue;
+      const surfaces = remediation.surfaces ?? finding.surfaces ?? fallbackSurfaces;
       recommendations.push({
         action: remediation.type,
         packageName: remediation.packageName ?? finding.packageName ?? finding.ruleId ?? finding.id,
@@ -350,6 +373,48 @@ function createRecommendations(findings: Finding[], profile: ProjectProfile): Re
   }
 
   return recommendations;
+}
+
+function createUnsupportedBareReactNativeReport(options: {
+  generatedAt: string;
+  nativeguard: DoctorReport["nativeguard"];
+  project: ProjectProfile;
+  dependencySnapshot: DependencySnapshot;
+}): DoctorReport {
+  const findings: Finding[] = [
+    {
+      id: "finding-unsupported-bare-react-native",
+      severity: "error",
+      status: "unsupported",
+      title: "Bare React Native is not supported yet",
+      detail:
+        "NativeGuard detected a bare React Native project and skipped compatibility analysis. This result is unsupported, not stable.",
+      confidence: "high",
+      evidence: [],
+      remediation: [
+        {
+          type: "manual-check",
+          note: "Analyze an Expo prebuild project, or wait for dedicated bare React Native support."
+        }
+      ]
+    }
+  ];
+
+  return {
+    schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
+    generatedAt: options.generatedAt,
+    nativeguard: options.nativeguard,
+    project: options.project,
+    dependencySnapshot: options.dependencySnapshot,
+    summary: {
+      status: "unsupported",
+      findingCounts: { info: 0, warning: 0, error: 1 }
+    },
+    packageIssues: [],
+    findings,
+    recommendations: [],
+    nextActions: createNextActions("unsupported", options.project)
+  };
 }
 
 function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {
@@ -523,17 +588,29 @@ function summarizeFindings(
   return { status, findingCounts };
 }
 
-function createNextActions(status: StabilityStatus, packageManager: PackageManagerName): string[] {
-  if (packageManager !== "npm") {
+function createNextActions(status: StabilityStatus, profile: ProjectProfile): string[] {
+  if (profile.kind === "bare-react-native") {
+    return [
+      "Bare React Native is not supported yet. NativeGuard skipped analysis and did not classify this project as stable."
+    ];
+  }
+  if (profile.packageManager !== "npm") {
     return ["NativeGuard detected this package manager, but full analysis is not implemented yet."];
   }
-  if (status === "stable") {
-    return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
+  switch (status) {
+    case "stable":
+      return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
+    case "accepted-exception":
+      return ["Review accepted exceptions and record them in nativeguard-lock.json when intentional."];
+    case "risky":
+      return ["Review risky findings before upgrading or releasing this app."];
+    case "unsupported":
+      return ["This project profile is unsupported. NativeGuard did not produce a stable compatibility result."];
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
   }
-  if (status === "accepted-exception") {
-    return ["Review accepted exceptions and record them in nativeguard-lock.json when intentional."];
-  }
-  return ["Review risky findings before upgrading or releasing this app."];
 }
 
 async function exists(filePath: string): Promise<boolean> {

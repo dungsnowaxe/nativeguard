@@ -83,9 +83,9 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
   const dependencyGraph = await createDependencyGraph(root, packageJson, profile.packageManager);
   const rawFindings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
-  const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, now);
+  const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, dependencyGraph, now);
   const findings = applyActiveExceptions(rawFindings, exceptionState.active);
-  const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot);
+  const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot, dependencyGraph);
   const allFindings = [...findings, ...staleExceptionFindings];
   const summary = summarizeFindings(allFindings, profile.packageManager);
   const packageIssues = allFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
@@ -599,18 +599,15 @@ function createDefaultConfig(): NativeGuardConfig {
 function evaluateExceptions(
   exceptions: LocalException[],
   snapshot: DependencySnapshot,
+  graph: DependencyGraph,
   now: Date
 ): { active: LocalException[]; stale: LocalException[] } {
-  const allDependencies = {
-    ...snapshot.dependencies,
-    ...snapshot.devDependencies
-  };
   const active: LocalException[] = [];
   const stale: LocalException[] = [];
 
   for (const exception of exceptions) {
-    const installedVersion = allDependencies[exception.packageName];
-    if (!installedVersion || !versionMatchesRange(installedVersion, exception.allowedVersions)) continue;
+    const installedVersions = resolveInstalledVersions(exception.packageName, snapshot, graph);
+    if (!installedVersions.some(version => versionMatchesRange(version, exception.allowedVersions))) continue;
     if (isExceptionExpired(exception, now)) {
       stale.push(exception);
     } else {
@@ -619,6 +616,27 @@ function evaluateExceptions(
   }
 
   return { active, stale };
+}
+
+function resolveInstalledVersions(
+  packageName: string,
+  snapshot: DependencySnapshot,
+  graph: DependencyGraph
+): string[] {
+  const fromGraph = Array.from(
+    new Set(
+      graph.nodes
+        .filter(node => node.packageName === packageName)
+        .map(node => node.installedVersion)
+    )
+  );
+  if (fromGraph.length > 0) return fromGraph;
+
+  const declared = {
+    ...snapshot.dependencies,
+    ...snapshot.devDependencies
+  }[packageName];
+  return declared ? [declared] : [];
 }
 
 function applyActiveExceptions(findings: Finding[], activeExceptions: LocalException[]): Finding[] {
@@ -645,36 +663,37 @@ function applyActiveExceptions(findings: Finding[], activeExceptions: LocalExcep
 
 function createStaleExceptionFindings(
   staleExceptions: LocalException[],
-  snapshot: DependencySnapshot
+  snapshot: DependencySnapshot,
+  graph: DependencyGraph
 ): Finding[] {
-  const allDependencies = {
-    ...snapshot.dependencies,
-    ...snapshot.devDependencies
-  };
+  return staleExceptions.map(exception => {
+    const installedVersions = resolveInstalledVersions(exception.packageName, snapshot, graph);
+    const installedLabel = installedVersions.length > 0 ? installedVersions.join(", ") : "unknown";
 
-  return staleExceptions.map(exception => ({
-    id: `finding-stale-exception-${exception.packageName}`,
-    packageName: exception.packageName,
-    severity: "warning",
-    status: "accepted-exception",
-    title: `Exception for ${exception.packageName} is stale`,
-    detail: `${exception.packageName}@${allDependencies[exception.packageName] ?? "unknown"} still matches an exception that expired on ${exception.expiresAt}.`,
-    confidence: "high",
-    evidence: [
-      {
-        type: "manual",
-        summary: exception.reason,
-        confidence: "high"
-      }
-    ],
-    remediation: [
-      {
-        type: "manual-check",
-        packageName: exception.packageName,
-        note: `Renew or remove the exception owned by ${exception.owner}.`
-      }
-    ]
-  }));
+    return {
+      id: `finding-stale-exception-${exception.packageName}`,
+      packageName: exception.packageName,
+      severity: "warning",
+      status: "accepted-exception",
+      title: `Exception for ${exception.packageName} is stale`,
+      detail: `${exception.packageName}@${installedLabel} still matches an exception that expired on ${exception.expiresAt}.`,
+      confidence: "high",
+      evidence: [
+        {
+          type: "manual",
+          summary: exception.reason,
+          confidence: "high"
+        }
+      ],
+      remediation: [
+        {
+          type: "manual-check",
+          packageName: exception.packageName,
+          note: `Renew or remove the exception owned by ${exception.owner}.`
+        }
+      ]
+    };
+  });
 }
 
 function evaluatePolicyExit(

@@ -432,6 +432,149 @@ test("applies active exceptions to matching findings", async () => {
   assert.equal(report.summary.status, "accepted-exception");
 });
 
+test("matches exceptions against lockfile-resolved versions, not declared ranges", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-pager-view": "^6.9.0"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm",
+    lockfileContent: JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            dependencies: {
+              expo: "54.0.0",
+              "react-native": "0.81.0",
+              "react-native-pager-view": "^6.9.0"
+            }
+          },
+          "node_modules/expo": {
+            version: "54.0.0"
+          },
+          "node_modules/react-native": {
+            version: "0.81.0"
+          },
+          "node_modules/react-native-pager-view": {
+            version: "6.9.1"
+          }
+        }
+      },
+      null,
+      2
+    ),
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules" },
+          ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+          exceptions: [
+            {
+              packageName: "react-native-pager-view",
+              allowedVersions: "6.9.1",
+              reason: "Temporary release exception while Android smoke tests are passing.",
+              owner: "@mobile-platform",
+              expiresAt: "2026-08-01",
+              requiredVerification: ["android-release-build"]
+            }
+          ],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const report = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  const pagerFinding = report.findings.find(finding => finding.packageName === "react-native-pager-view");
+  assert.equal(pagerFinding?.status, "accepted-exception");
+  assert.equal(report.policy?.activeExceptions.length, 1);
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.9.0");
+  assert.equal(
+    report.dependencyGraph?.nodes.find(node => node.packageName === "react-native-pager-view")?.installedVersion,
+    "6.9.1"
+  );
+});
+
+test("does not apply exceptions when lockfile version falls outside allowedVersions", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "react-native-pager-view": "^6.9.0"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm",
+    lockfileContent: JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            dependencies: {
+              expo: "54.0.0",
+              "react-native": "0.81.0",
+              "react-native-pager-view": "^6.9.0"
+            }
+          },
+          "node_modules/expo": {
+            version: "54.0.0"
+          },
+          "node_modules/react-native": {
+            version: "0.81.0"
+          },
+          "node_modules/react-native-pager-view": {
+            version: "6.10.0"
+          }
+        }
+      },
+      null,
+      2
+    ),
+    files: {
+      "nativeguard.config.json": JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          rules: { source: "@nativeguard/rules" },
+          ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+          exceptions: [
+            {
+              packageName: "react-native-pager-view",
+              allowedVersions: "6.9.0",
+              reason: "Pinned exception for an older install that is no longer present.",
+              owner: "@mobile-platform",
+              expiresAt: "2026-08-01",
+              requiredVerification: ["android-release-build"]
+            }
+          ],
+          redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
+        },
+        null,
+        2
+      )
+    }
+  });
+
+  const report = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-11T00:00:00.000Z")
+  });
+
+  const pagerFinding = report.findings.find(finding => finding.packageName === "react-native-pager-view");
+  assert.equal(pagerFinding?.status, "risky");
+  assert.equal(report.policy?.activeExceptions.length, 0);
+});
+
 test("reports stale exceptions and applies CI policy", async () => {
   const root = await fixture({
     dependencies: {

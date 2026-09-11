@@ -20,7 +20,10 @@ test("strips a leading -- so pnpm-style argv still runs doctor", async () => {
     const dashed = await captureStdout(() => main(["--", "doctor", "--json"]));
     const direct = await captureStdout(() => main(["doctor", "--json"]));
     assert.equal(dashed.exitCode, direct.exitCode);
-    assert.deepEqual(parseCapturedJson(dashed.stdout), parseCapturedJson(direct.stdout));
+    const dashedReport = parseCapturedJson(dashed.stdout) as { generatedAt: string; summary: { status: string } };
+    const directReport = parseCapturedJson(direct.stdout) as { generatedAt: string; summary: { status: string } };
+    assert.equal(dashedReport.summary.status, directReport.summary.status);
+    assert.deepEqual({ ...dashedReport, generatedAt: undefined }, { ...directReport, generatedAt: undefined });
   } finally {
     process.chdir(previous);
   }

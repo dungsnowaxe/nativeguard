@@ -11,7 +11,7 @@ import {
 const CLI_VERSION = "0.0.0";
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
-  const [command, ...args] = argv;
+  const [command, ...args] = argv[0] === "--" ? argv.slice(1) : argv;
 
   if (command === "--version" || command === "-v") {
     console.log(CLI_VERSION);

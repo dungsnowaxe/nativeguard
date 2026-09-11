@@ -6,12 +6,14 @@ Use it to decide **pin, bump, leave, or exclude** — then change the app yourse
 
 ## Dogfood (from this repo)
 
+Requires **Node.js >= 22.13**. This repo pins `packageManager` to `pnpm@11.10.0`; Node 20 fails with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`.
+
 v1 is local-only. There is no npm publish step. Build, then run the workspace CLI:
 
 ```sh
 pnpm install
 pnpm build
-pnpm nativeguard -- doctor --json
+pnpm nativeguard doctor --json
 ```
 
 Equivalent:
@@ -28,7 +30,7 @@ pnpm build
 (cd fixtures/sdk53-pager-view && node ../../packages/cli/dist/index.js doctor --json)
 ```
 
-After `pnpm build`, `pnpm exec nativeguard -- doctor --json` also works from the repo root (the workspace `bin` points at `packages/cli/dist/index.js`).
+After `pnpm build`, `pnpm exec nativeguard doctor --json` also works from the repo root (the workspace `bin` points at `packages/cli/dist/index.js`). The CLI strips a leading `--` from argv, so `pnpm nativeguard -- doctor --json` still runs doctor.
 
 ## Commands
 

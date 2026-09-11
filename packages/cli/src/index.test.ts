@@ -12,6 +12,20 @@ test("prints version", async () => {
   assert.match(output.stdout, /0\.0\.0/);
 });
 
+test("strips a leading -- so pnpm-style argv still runs doctor", async () => {
+  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/sdk53-pager-view");
+  const previous = process.cwd();
+  process.chdir(fixtureRoot);
+  try {
+    const dashed = await captureStdout(() => main(["--", "doctor", "--json"]));
+    const direct = await captureStdout(() => main(["doctor", "--json"]));
+    assert.equal(dashed.exitCode, direct.exitCode);
+    assert.deepEqual(parseCapturedJson(dashed.stdout), parseCapturedJson(direct.stdout));
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 test("returns non-zero for unsupported projects", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-unsupported-"));
   await writeFile(path.join(root, "package.json"), JSON.stringify({ private: true }, null, 2));

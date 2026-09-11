@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "build": "tsc -b packages/schema packages/rules packages/core packages/cli",
     "check": "tsc -b packages/schema packages/rules packages/core packages/cli",

@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.10.0",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24 <25"
   },
   "scripts": {
     "build": "tsc -b packages/schema packages/rules packages/core packages/cli",

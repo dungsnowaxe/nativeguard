@@ -6,7 +6,7 @@ Use it to decide **pin, bump, leave, or exclude** — then change the app yourse
 
 ## Dogfood (from this repo)
 
-Requires **Node.js >= 22.13**. This repo pins `packageManager` to `pnpm@11.10.0`; Node 20 fails with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`.
+Requires **Node.js 24** (latest 24.x; `.nvmrc` is `24`). This repo pins `packageManager` to `pnpm@11.10.0`, which needs modern Node (`node:sqlite`); Node 20 fails with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`.
 
 v1 is local-only. There is no npm publish step. Build, then run the workspace CLI:
 

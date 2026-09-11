@@ -30,7 +30,7 @@ pnpm build
 (cd fixtures/sdk53-pager-view && node ../../packages/cli/dist/index.js doctor --json)
 ```
 
-After `pnpm build`, `pnpm exec nativeguard doctor --json` also works from the repo root (the workspace `bin` points at `packages/cli/dist/index.js`). The CLI strips a leading `--` from argv, so `pnpm nativeguard -- doctor --json` still runs doctor.
+The workspace script runs `node packages/cli/dist/index.js`. The CLI strips a leading `--` from argv, so `pnpm nativeguard -- doctor --json` still runs doctor.
 
 ## Commands
 

@@ -4,6 +4,8 @@ import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
   DOCTOR_REPORT_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
+  isRecommendationAction,
+  type AcceptedException,
   type CompatibilityRule,
   type DependencySnapshot,
   type DoctorReport,
@@ -13,6 +15,8 @@ import {
   type PackageManagerName,
   type ProjectKind,
   type ProjectProfile,
+  type Recommendation,
+  type RecommendationSurface,
   type StabilityStatus,
   validateLockfile
 } from "@nativeguard/schema";
@@ -30,6 +34,7 @@ export interface AnalyzeOptions {
   rootDir: string;
   cliVersion: string;
   now?: Date;
+  sdk?: string;
 }
 
 interface PackageJson {
@@ -42,27 +47,65 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const packageJson = await readPackageJson(root);
   const profile = await detectProjectProfile(root, packageJson);
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
-  const findings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
-  const summary = summarizeFindings(findings, profile.packageManager);
+  const expoSdkMajor = resolveExpoSdkMajor(options.sdk, dependencySnapshot, profile);
+  const analyzedProfile = expoSdkMajor ? { ...profile, expoSdkMajor } : profile;
+  const generatedAt = (options.now ?? new Date()).toISOString();
+  const nativeguard = {
+    cliVersion: options.cliVersion,
+    rulesPackage: RULES_PACKAGE
+  };
+  const snapshot = await readNativeGuardLockfile(root);
+  const acceptedExceptions = snapshot?.acceptedExceptions ?? [];
+
+  switch (analyzedProfile.kind) {
+    case "bare-react-native":
+      return createUnsupportedBareReactNativeReport({
+        generatedAt,
+        nativeguard,
+        project: analyzedProfile,
+        dependencySnapshot,
+        acceptedExceptions
+      });
+    case "expo-prebuild":
+    case "expo-go":
+      break;
+    default: {
+      const exhaustive: never = analyzedProfile.kind;
+      throw new NativeGuardError(`Unhandled project kind: ${String(exhaustive)}`, "UNSUPPORTED_PROJECT");
+    }
+  }
+
+  const findings = applyAcceptedExceptions(
+    evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot),
+    acceptedExceptions
+  );
+  const recommendations = createRecommendations(findings, analyzedProfile);
+  const summary = summarizeFindings(findings, analyzedProfile.packageManager);
   const packageIssues = findings.flatMap(finding => (finding.issue ? [finding.issue] : []));
 
   return {
     schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
-    generatedAt: (options.now ?? new Date()).toISOString(),
-    nativeguard: {
-      cliVersion: options.cliVersion,
-      rulesPackage: RULES_PACKAGE
-    },
-    project: profile,
+    generatedAt,
+    nativeguard,
+    project: analyzedProfile,
     dependencySnapshot,
     summary,
     packageIssues,
     findings,
-    nextActions: createNextActions(summary.status, profile.packageManager)
+    recommendations,
+    nextActions: createNextActions(summary.status, analyzedProfile),
+    acceptedExceptions
   };
 }
 
+export function parseExpoSdkMajor(version: string): string | undefined {
+  const normalized = version.trim().replace(/^[~^=v]+/, "");
+  const match = normalized.match(/^(\d+)/);
+  return match?.[1];
+}
+
 export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: string): Promise<string> {
+  const existing = await readNativeGuardLockfile(rootDir);
   const lockfile: NativeGuardLockfile = {
     schemaVersion: LOCKFILE_SCHEMA_VERSION,
     generatedAt: report.generatedAt,
@@ -71,7 +114,8 @@ export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: st
     packageManager: report.project.packageManager,
     dependencySnapshot: report.dependencySnapshot,
     summary: report.summary,
-    acceptedExceptions: []
+    recommendations: report.recommendations,
+    acceptedExceptions: report.acceptedExceptions ?? existing?.acceptedExceptions ?? []
   };
 
   const outputPath = path.join(rootDir, "nativeguard-lock.json");
@@ -117,6 +161,9 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   const hasIosProject = await exists(path.join(root, "ios"));
   const hasAndroidProject = await exists(path.join(root, "android"));
   const packageManager = await detectPackageManager(root);
+  const newArchitectureEnabled = await detectNewArchitectureEnabled(root);
+  const architecture =
+    newArchitectureEnabled === undefined ? {} : { newArchitectureEnabled };
 
   if (expoVersion && (hasIosProject || hasAndroidProject)) {
     return {
@@ -125,6 +172,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
       packageManager,
       expoVersion,
       ...(reactNativeVersion ? { reactNativeVersion } : {}),
+      ...architecture,
       hasIosProject,
       hasAndroidProject
     };
@@ -137,6 +185,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
       packageManager,
       ...(expoVersion ? { expoVersion } : {}),
       reactNativeVersion,
+      ...architecture,
       hasIosProject,
       hasAndroidProject
     };
@@ -149,6 +198,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
       packageManager,
       expoVersion,
       ...(reactNativeVersion ? { reactNativeVersion } : {}),
+      ...architecture,
       hasIosProject,
       hasAndroidProject
     };
@@ -168,6 +218,39 @@ export async function detectPackageManager(root: string): Promise<PackageManager
   return "unknown";
 }
 
+async function detectNewArchitectureEnabled(root: string): Promise<boolean | undefined> {
+  for (const fileName of ["app.json", "app.config.json"]) {
+    try {
+      const raw = await readFile(path.join(root, fileName), "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      const enabled = newArchitectureFromConfig(parsed);
+      if (enabled !== undefined) return enabled;
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) continue;
+      throw error;
+    }
+  }
+  return undefined;
+}
+
+function newArchitectureFromConfig(value: unknown): boolean | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const expo = asRecord(record.expo) ?? record;
+  if (typeof expo.newArchEnabled === "boolean") return expo.newArchEnabled;
+
+  const android = asRecord(expo.android)?.newArchEnabled;
+  const ios = asRecord(expo.ios)?.newArchEnabled;
+  if (android === false || ios === false) return false;
+  if (android === true || ios === true) return true;
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
 async function readPackageJson(root: string): Promise<PackageJson> {
   try {
     const raw = await readFile(path.join(root, "package.json"), "utf8");
@@ -181,23 +264,42 @@ async function readPackageJson(root: string): Promise<PackageJson> {
 }
 
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {
-  const lockfile = await readNpmLockfile(root);
+  const npmLockfile = await readNpmLockfile(root);
   return {
     dependencies: packageJson.dependencies ?? {},
     devDependencies: packageJson.devDependencies ?? {},
-    ...(lockfile ? { lockfile } : {})
+    ...(npmLockfile?.resolvedVersions && Object.keys(npmLockfile.resolvedVersions).length > 0
+      ? { resolvedVersions: npmLockfile.resolvedVersions }
+      : {}),
+    ...(npmLockfile?.lockfile ? { lockfile: npmLockfile.lockfile } : {})
   };
 }
 
-async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfile"]> {
+interface NpmLockfilePackage {
+  version?: string;
+}
+
+interface ParsedNpmLockfile {
+  lockfile?: DependencySnapshot["lockfile"];
+  resolvedVersions?: Record<string, string>;
+}
+
+async function readNpmLockfile(root: string): Promise<ParsedNpmLockfile | undefined> {
   const lockfilePath = path.join(root, "package-lock.json");
   try {
     const raw = await readFile(lockfilePath, "utf8");
-    const parsed = JSON.parse(raw) as { lockfileVersion?: number; packages?: Record<string, unknown> };
+    const parsed = JSON.parse(raw) as {
+      lockfileVersion?: number;
+      packages?: Record<string, NpmLockfilePackage>;
+    };
+    const resolvedVersions = collectResolvedVersions(parsed.packages ?? {});
     return {
-      path: "package-lock.json",
-      ...(parsed.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
-      packageCount: parsed.packages ? Object.keys(parsed.packages).length : 0
+      lockfile: {
+        path: "package-lock.json",
+        ...(parsed.lockfileVersion ? { lockfileVersion: parsed.lockfileVersion } : {}),
+        packageCount: parsed.packages ? Object.keys(parsed.packages).length : 0
+      },
+      ...(Object.keys(resolvedVersions).length > 0 ? { resolvedVersions } : {})
     };
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
@@ -205,6 +307,18 @@ async function readNpmLockfile(root: string): Promise<DependencySnapshot["lockfi
     }
     throw error;
   }
+}
+
+function collectResolvedVersions(packages: Record<string, NpmLockfilePackage>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(packages)) {
+    const match = key.match(/^node_modules\/(@[^/]+\/[^/]+|[^/]+)$/);
+    const packageName = match?.[1];
+    if (packageName && value.version) {
+      resolved[packageName] = value.version;
+    }
+  }
+  return resolved;
 }
 
 function evaluateRules(
@@ -219,10 +333,13 @@ function evaluateRules(
   const findings: Finding[] = [];
 
   for (const rule of rules) {
-    const installedVersion = allDependencies[rule.packageName];
+    const declaredVersion = allDependencies[rule.packageName];
+    const installedVersion = snapshot.resolvedVersions?.[rule.packageName] ?? declaredVersion;
     if (!ruleMatchesProfile(rule, profile)) continue;
+    if (!requiredPackagesInstalled(rule, snapshot, allDependencies)) continue;
     if (rule.packageName !== "react-native" && !installedVersion) continue;
     if (installedVersion && !versionMatchesRange(installedVersion, rule.affectedRange)) continue;
+    if (unlessConstraintMatches(rule, snapshot, allDependencies)) continue;
     const severity = rule.outcome === "risky" ? "error" : rule.outcome === "accepted-exception" ? "warning" : "info";
     const issue =
       installedVersion && rule.issue
@@ -240,7 +357,8 @@ function evaluateRules(
       confidence: rule.confidence,
       ...(issue ? { issue } : {}),
       evidence: rule.evidence,
-      remediation: rule.remediation
+      remediation: rule.remediation,
+      ...(rule.surfaces ? { surfaces: rule.surfaces } : {})
     });
   }
 
@@ -258,6 +376,58 @@ function evaluateRules(
   }
 
   return findings;
+}
+
+function applyAcceptedExceptions(findings: Finding[], exceptions: AcceptedException[]): Finding[] {
+  if (exceptions.length === 0) return findings;
+  return findings.map(finding => {
+    if (!findingHasOnlyLeaveOrExcludeRemediation(finding)) return finding;
+    const installedVersion = finding.issue?.installedVersion;
+    if (!installedVersion) return finding;
+    const accepted = exceptions.find(exception =>
+      acceptedExceptionMatches(exception, finding, installedVersion)
+    );
+    if (!accepted) return finding;
+    return {
+      ...finding,
+      status: "accepted-exception",
+      severity: "warning",
+      detail: `${finding.detail} Recorded as an accepted exception: ${accepted.reason}`,
+      ...(finding.issue
+        ? {
+            issue: {
+              ...finding.issue,
+              status: "accepted-exception",
+              severity: "warning"
+            }
+          }
+        : {})
+    };
+  });
+}
+
+function findingHasOnlyLeaveOrExcludeRemediation(finding: Finding): boolean {
+  const actions = finding.remediation.filter(action => isRecommendationAction(action.type));
+  return (
+    actions.length > 0 &&
+    actions.every(action => action.type === "leave" || action.type === "exclude")
+  );
+}
+
+function acceptedExceptionMatches(
+  exception: AcceptedException,
+  finding: Finding,
+  installedVersion: string
+): boolean {
+  if (exception.version !== installedVersion) return false;
+  if (exception.ruleId !== undefined && exception.ruleId !== finding.ruleId) return false;
+  if (exception.findingId !== undefined && exception.findingId !== finding.id) return false;
+  const packageNames = new Set(
+    [finding.packageName, finding.issue?.packageName, ...finding.remediation.map(action => action.packageName)].filter(
+      (name): name is string => Boolean(name)
+    )
+  );
+  return packageNames.has(exception.packageName);
 }
 
 function createPackageIssue(
@@ -283,12 +453,183 @@ function createPackageIssue(
   };
 }
 
+function createRecommendations(findings: Finding[], profile: ProjectProfile): Recommendation[] {
+  const fallbackSurfaces = surfacesForProject(profile.kind);
+  const recommendations: Recommendation[] = [];
+
+  for (const finding of findings) {
+    for (const remediation of finding.remediation) {
+      if (!isRecommendationAction(remediation.type)) continue;
+      const surfaces = remediation.surfaces ?? finding.surfaces ?? fallbackSurfaces;
+      recommendations.push({
+        action: remediation.type,
+        packageName: remediation.packageName ?? finding.packageName ?? finding.ruleId ?? finding.id,
+        evidence: finding.evidence,
+        surfaces,
+        ...(finding.issue?.installedVersion ? { from: finding.issue.installedVersion } : {}),
+        ...(remediation.to ? { to: remediation.to } : {}),
+        ...(remediation.note ? { note: remediation.note } : {}),
+        ...(finding.ruleId ? { ruleId: finding.ruleId } : {})
+      });
+    }
+  }
+
+  return recommendations;
+}
+
+function createUnsupportedBareReactNativeReport(options: {
+  generatedAt: string;
+  nativeguard: DoctorReport["nativeguard"];
+  project: ProjectProfile;
+  dependencySnapshot: DependencySnapshot;
+  acceptedExceptions: AcceptedException[];
+}): DoctorReport {
+  const findings: Finding[] = [
+    {
+      id: "finding-unsupported-bare-react-native",
+      severity: "error",
+      status: "unsupported",
+      title: "Bare React Native is not supported yet",
+      detail:
+        "NativeGuard detected a bare React Native project and skipped compatibility analysis. This result is unsupported, not stable.",
+      confidence: "high",
+      evidence: [],
+      remediation: [
+        {
+          type: "manual-check",
+          note: "Analyze an Expo prebuild project, or wait for dedicated bare React Native support."
+        }
+      ]
+    }
+  ];
+
+  return {
+    schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
+    generatedAt: options.generatedAt,
+    nativeguard: options.nativeguard,
+    project: options.project,
+    dependencySnapshot: options.dependencySnapshot,
+    summary: {
+      status: "unsupported",
+      findingCounts: { info: 0, warning: 0, error: 1 }
+    },
+    packageIssues: [],
+    findings,
+    recommendations: [],
+    nextActions: createNextActions("unsupported", options.project),
+    acceptedExceptions: options.acceptedExceptions
+  };
+}
+
+function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {
+  switch (kind) {
+    case "expo-prebuild":
+      return ["eas", "local-native"];
+    case "expo-go":
+      return ["runtime"];
+    case "bare-react-native":
+      return ["local-native"];
+    default: {
+      const exhaustive: never = kind;
+      return exhaustive;
+    }
+  }
+}
+
+function resolveExpoSdkMajor(
+  sdkFlag: string | undefined,
+  snapshot: DependencySnapshot,
+  profile: ProjectProfile
+): string | undefined {
+  if (sdkFlag !== undefined) {
+    const parsed = parseExpoSdkMajor(sdkFlag);
+    if (!parsed) {
+      throw new NativeGuardError(
+        `Invalid Expo SDK value "${sdkFlag}". Expected a major version such as 54.`,
+        "INVALID_SDK"
+      );
+    }
+    return parsed;
+  }
+
+  const expoVersion = snapshot.resolvedVersions?.expo ?? profile.expoVersion;
+  return expoVersion ? parseExpoSdkMajor(expoVersion) : undefined;
+}
+
 function ruleMatchesProfile(rule: CompatibilityRule, profile: ProjectProfile): boolean {
   if (!rule.context.projectKinds.includes(profile.kind)) return false;
   if (rule.context.packageManagers && !rule.context.packageManagers.includes(profile.packageManager)) return false;
-  if (rule.context.expoSdk && !matchesAnyVersionPattern(profile.expoVersion, rule.context.expoSdk)) return false;
+  if (rule.context.expoSdk && !ruleMatchesSdk(rule, profile.expoSdkMajor)) return false;
   if (rule.context.reactNative && !matchesAnyVersionPattern(profile.reactNativeVersion, rule.context.reactNative)) return false;
+  if (rule.context.newArchitecture !== undefined && profile.newArchitectureEnabled !== rule.context.newArchitecture) {
+    return false;
+  }
   return true;
+}
+
+function requiredPackagesInstalled(
+  rule: CompatibilityRule,
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>
+): boolean {
+  const required = rule.context.requiresPackages;
+  if (!required || required.length === 0) return true;
+  return required.every(packageName => Boolean(resolvedOrDeclaredVersion(snapshot, declared, packageName)));
+}
+
+function unlessConstraintMatches(
+  rule: CompatibilityRule,
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>
+): boolean {
+  if (!rule.unless) return false;
+  const packageName = rule.unless.packageName ?? rule.packageName;
+  const version = resolvedOrDeclaredVersion(snapshot, declared, packageName);
+  return Boolean(version && versionMatchesRange(version, rule.unless.range));
+}
+
+function resolvedOrDeclaredVersion(
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>,
+  packageName: string
+): string | undefined {
+  return snapshot.resolvedVersions?.[packageName] ?? declared[packageName];
+}
+
+function ruleMatchesSdk(rule: CompatibilityRule, sdkMajor: string | undefined): boolean {
+  const required = rule.context.expoSdk;
+  if (!required || required.length === 0) return true;
+  if (!sdkMajor) return false;
+  return required.some(pattern => sdkPatternMatches(sdkMajor, pattern));
+}
+
+function sdkPatternMatches(sdkMajor: string, pattern: string): boolean {
+  const trimmed = pattern.trim();
+  const comparator = trimmed.match(/^(<=|>=|<|>)\s*(\d+)/);
+  if (comparator) {
+    const sdk = Number(sdkMajor);
+    const target = Number(comparator[2]);
+    const operator = comparator[1];
+    if (!Number.isFinite(sdk) || !Number.isFinite(target) || !operator) return false;
+    if (operator !== "<" && operator !== "<=" && operator !== ">" && operator !== ">=") {
+      return false;
+    }
+    switch (operator) {
+      case "<":
+        return sdk < target;
+      case "<=":
+        return sdk <= target;
+      case ">":
+        return sdk > target;
+      case ">=":
+        return sdk >= target;
+      default: {
+        const exhaustive: never = operator;
+        return exhaustive;
+      }
+    }
+  }
+  return parseExpoSdkMajor(trimmed) === sdkMajor;
 }
 
 function matchesAnyVersionPattern(version: string | undefined, patterns: string[]): boolean {
@@ -412,17 +753,31 @@ function summarizeFindings(
   return { status, findingCounts };
 }
 
-function createNextActions(status: StabilityStatus, packageManager: PackageManagerName): string[] {
-  if (packageManager !== "npm") {
+function createNextActions(status: StabilityStatus, profile: ProjectProfile): string[] {
+  if (profile.kind === "bare-react-native") {
+    return [
+      "Bare React Native is not supported yet. NativeGuard skipped analysis and did not classify this project as stable."
+    ];
+  }
+  if (profile.packageManager !== "npm") {
     return ["NativeGuard detected this package manager, but full analysis is not implemented yet."];
   }
-  if (status === "stable") {
-    return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
+  switch (status) {
+    case "stable":
+      return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
+    case "accepted-exception":
+      return [
+        "Leave/exclude findings listed in nativeguard-lock.json acceptedExceptions are accepted, not new risk. Edit that snapshot by hand; NativeGuard does not mutate package manager lockfiles."
+      ];
+    case "risky":
+      return ["Review risky findings before upgrading or releasing this app."];
+    case "unsupported":
+      return ["This project profile is unsupported. NativeGuard did not produce a stable compatibility result."];
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
   }
-  if (status === "accepted-exception") {
-    return ["Review accepted exceptions and record them in nativeguard-lock.json when intentional."];
-  }
-  return ["Review risky findings before upgrading or releasing this app."];
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -445,5 +800,6 @@ export type {
   NativeGuardLockfile,
   PackageManagerName,
   ProjectKind,
-  ProjectProfile
+  ProjectProfile,
+  Recommendation
 };

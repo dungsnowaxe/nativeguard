@@ -7,6 +7,10 @@ export type PackageManagerName = "npm" | "yarn" | "pnpm" | "bun" | "unknown";
 export type FindingSeverity = "info" | "warning" | "error";
 export type StabilityStatus = "stable" | "accepted-exception" | "risky" | "unsupported";
 export type Confidence = "low" | "medium" | "high";
+export const RECOMMENDATION_ACTIONS = ["bump", "pin", "leave", "exclude"] as const;
+export type RecommendationAction = (typeof RECOMMENDATION_ACTIONS)[number];
+export const RECOMMENDATION_SURFACES = ["eas", "local-native", "runtime"] as const;
+export type RecommendationSurface = (typeof RECOMMENDATION_SURFACES)[number];
 
 export interface ProjectProfile {
   root: string;
@@ -14,7 +18,9 @@ export interface ProjectProfile {
   packageManager: PackageManagerName;
   packageManagerVersion?: string;
   expoVersion?: string;
+  expoSdkMajor?: string;
   reactNativeVersion?: string;
+  newArchitectureEnabled?: boolean;
   hasIosProject: boolean;
   hasAndroidProject: boolean;
 }
@@ -22,6 +28,7 @@ export interface ProjectProfile {
 export interface DependencySnapshot {
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
+  resolvedVersions?: Record<string, string>;
   lockfile?: {
     path: string;
     lockfileVersion?: number;
@@ -37,10 +44,22 @@ export interface EvidenceRecord {
 }
 
 export interface RemediationAction {
-  type: "bump" | "pin" | "exclude" | "patch" | "manual-check";
+  type: RecommendationAction | "patch" | "manual-check";
   packageName?: string;
   to?: string;
   note: string;
+  surfaces?: RecommendationSurface[];
+}
+
+export interface Recommendation {
+  action: RecommendationAction;
+  packageName: string;
+  evidence: EvidenceRecord[];
+  surfaces: RecommendationSurface[];
+  from?: string;
+  to?: string;
+  note?: string;
+  ruleId?: string;
 }
 
 export interface CompatibilityIssueMetadata {
@@ -61,6 +80,11 @@ export interface CompatibilityRule {
     reactNative?: string[];
     packageManagers?: PackageManagerName[];
     newArchitecture?: boolean;
+    requiresPackages?: string[];
+  };
+  unless?: {
+    packageName?: string;
+    range: string;
   };
   outcome: StabilityStatus;
   confidence: Confidence;
@@ -68,6 +92,7 @@ export interface CompatibilityRule {
   issue?: CompatibilityIssueMetadata;
   evidence: EvidenceRecord[];
   remediation: RemediationAction[];
+  surfaces?: RecommendationSurface[];
 }
 
 export interface PackageIssue {
@@ -98,6 +123,7 @@ export interface Finding {
   issue?: PackageIssue;
   evidence: EvidenceRecord[];
   remediation: RemediationAction[];
+  surfaces?: RecommendationSurface[];
 }
 
 export interface DoctorReport {
@@ -118,7 +144,9 @@ export interface DoctorReport {
   };
   packageIssues: PackageIssue[];
   findings: Finding[];
+  recommendations: Recommendation[];
   nextActions: string[];
+  acceptedExceptions?: AcceptedException[];
 }
 
 export interface AcceptedException {
@@ -139,6 +167,7 @@ export interface NativeGuardLockfile {
   packageManager: PackageManagerName;
   dependencySnapshot: DependencySnapshot;
   summary: DoctorReport["summary"];
+  recommendations?: Recommendation[];
   acceptedExceptions: AcceptedException[];
 }
 
@@ -173,6 +202,9 @@ export function validateCompatibilityRule(value: unknown): ValidationResult {
   if (!Array.isArray(value.remediation)) {
     errors.push("remediation must be an array");
   }
+  if (value.surfaces !== undefined && (!Array.isArray(value.surfaces) || !value.surfaces.every(isRecommendationSurface))) {
+    errors.push(`surfaces must contain only ${RECOMMENDATION_SURFACES.join("|")}`);
+  }
 
   return { valid: errors.length === 0, errors };
 }
@@ -191,9 +223,55 @@ export function validateDoctorReport(value: unknown): ValidationResult {
   if (!isRecord(value.summary)) errors.push("summary must be an object");
   if (!Array.isArray(value.packageIssues)) errors.push("packageIssues must be an array");
   if (!Array.isArray(value.findings)) errors.push("findings must be an array");
+  if (!Array.isArray(value.recommendations)) {
+    errors.push("recommendations must be an array");
+  } else {
+    value.recommendations.forEach((recommendation, index) => {
+      validateRecommendation(recommendation, index, errors);
+    });
+  }
   if (!Array.isArray(value.nextActions)) errors.push("nextActions must be an array");
+  if (value.acceptedExceptions !== undefined && !Array.isArray(value.acceptedExceptions)) {
+    errors.push("acceptedExceptions must be an array");
+  }
 
   return { valid: errors.length === 0, errors };
+}
+
+export function validateRecommendation(
+  value: unknown,
+  index = 0,
+  errors: string[] = []
+): ValidationResult {
+  if (!isRecord(value)) {
+    errors.push(`recommendations[${index}] must be an object`);
+    return { valid: false, errors };
+  }
+
+  if (!isRecommendationAction(value.action)) {
+    errors.push(`recommendations[${index}].action must be one of ${RECOMMENDATION_ACTIONS.join("|")}`);
+  }
+  requireString(value, "packageName", errors, `recommendations[${index}].packageName`);
+  if (!Array.isArray(value.evidence)) {
+    errors.push(`recommendations[${index}].evidence must be an array`);
+  }
+  if (!Array.isArray(value.surfaces) || value.surfaces.length === 0) {
+    errors.push(`recommendations[${index}].surfaces must be a non-empty array`);
+  } else if (!value.surfaces.every(isRecommendationSurface)) {
+    errors.push(
+      `recommendations[${index}].surfaces must contain only ${RECOMMENDATION_SURFACES.join("|")}`
+    );
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+export function isRecommendationAction(value: unknown): value is RecommendationAction {
+  return RECOMMENDATION_ACTIONS.some(action => action === value);
+}
+
+export function isRecommendationSurface(value: unknown): value is RecommendationSurface {
+  return RECOMMENDATION_SURFACES.some(surface => surface === value);
 }
 
 export function validateLockfile(value: unknown): ValidationResult {
@@ -209,6 +287,9 @@ export function validateLockfile(value: unknown): ValidationResult {
   if (!isRecord(value.dependencySnapshot)) errors.push("dependencySnapshot must be an object");
   if (!isRecord(value.summary)) errors.push("summary must be an object");
   if (!Array.isArray(value.acceptedExceptions)) errors.push("acceptedExceptions must be an array");
+  if (value.recommendations !== undefined && !Array.isArray(value.recommendations)) {
+    errors.push("recommendations must be an array");
+  }
 
   return { valid: errors.length === 0, errors };
 }
@@ -217,8 +298,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function requireString(value: Record<string, unknown>, key: string, errors: string[]): void {
+function requireString(
+  value: Record<string, unknown>,
+  key: string,
+  errors: string[],
+  label = key
+): void {
   if (typeof value[key] !== "string" || value[key].length === 0) {
-    errors.push(`${key} must be a non-empty string`);
+    errors.push(`${label} must be a non-empty string`);
   }
 }

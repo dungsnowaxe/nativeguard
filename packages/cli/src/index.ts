@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { analyzeProject, NativeGuardError, writeNativeGuardLockfile } from "@nativeguard/core";
-import { validateDoctorReport } from "@nativeguard/schema";
+import {
+  validateDoctorReport,
+  type Recommendation,
+  type RecommendationAction,
+  type RecommendationSurface,
+  type StabilityStatus
+} from "@nativeguard/schema";
 
 const CLI_VERSION = "0.0.0";
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
-  const [command, ...args] = argv;
+  const [command, ...args] = argv[0] === "--" ? argv.slice(1) : argv;
 
   if (command === "--version" || command === "-v") {
     console.log(CLI_VERSION);
@@ -28,12 +34,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
 async function runDoctor(args: string[]): Promise<number> {
   const json = args.includes("--json");
-  const writeLockfile = args.includes("--write-lockfile");
 
   try {
+    const { writeLockfile, sdk } = parseDoctorArgs(args);
     const report = await analyzeProject({
       rootDir: process.cwd(),
-      cliVersion: CLI_VERSION
+      cliVersion: CLI_VERSION,
+      ...(sdk ? { sdk } : {})
     });
 
     const validation = validateDoctorReport(report);
@@ -54,7 +61,7 @@ async function runDoctor(args: string[]): Promise<number> {
       printReport(report, writeLockfile);
     }
 
-    return report.summary.status === "risky" ? 1 : 0;
+    return exitCodeForStatus(report.summary.status);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (json) {
@@ -78,13 +85,83 @@ async function runDoctor(args: string[]): Promise<number> {
   }
 }
 
+function parseDoctorArgs(args: string[]): { json: boolean; writeLockfile: boolean; sdk?: string } {
+  let json = false;
+  let writeLockfile = false;
+  let sdk: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--write-snapshot" || arg === "--write-lockfile") {
+      writeLockfile = true;
+      continue;
+    }
+    if (arg === "--sdk") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new NativeGuardError(
+          "The --sdk flag requires an Expo SDK major, for example --sdk 54.",
+          "INVALID_SDK"
+        );
+      }
+      sdk = value;
+      index += 1;
+      continue;
+    }
+    if (arg?.startsWith("--sdk=")) {
+      const value = arg.slice("--sdk=".length);
+      if (!value) {
+        throw new NativeGuardError(
+          "The --sdk flag requires an Expo SDK major, for example --sdk=54.",
+          "INVALID_SDK"
+        );
+      }
+      sdk = value;
+    }
+  }
+
+  return { json, writeLockfile, ...(sdk ? { sdk } : {}) };
+}
+
 function printHelp(): void {
   console.log(`NativeGuard
 
 Usage:
   nativeguard --version
-  nativeguard doctor [--json] [--write-lockfile]
+  nativeguard doctor [--json] [--write-snapshot] [--sdk <major>]
+
+  --write-snapshot, --write-lockfile
+      Write nativeguard-lock.json (NativeGuard snapshot only).
+      Does not mutate npm, Yarn, pnpm, or Bun lockfiles.
+      Preserves acceptedExceptions already recorded in the snapshot.
+  --sdk <major>
+      Filter rules to this Expo SDK major. Parsed from the project when omitted.
+
+  Accepted leave/exclude findings:
+      Add an acceptedExceptions[] entry to nativeguard-lock.json (package, version,
+      reason, optional ruleId). The next doctor run surfaces those as
+      accepted-exception instead of re-erroring. pin/bump findings still error
+      until the installed version changes.
 `);
+}
+
+function exitCodeForStatus(status: StabilityStatus): number {
+  switch (status) {
+    case "stable":
+    case "accepted-exception":
+      return 0;
+    case "risky":
+    case "unsupported":
+      return 1;
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }
 
 function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLockfile: boolean): void {
@@ -93,6 +170,7 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
   console.log(`Project: ${report.project.kind}`);
   console.log(`Package manager: ${report.project.packageManager}`);
   console.log(`Expo: ${report.project.expoVersion ?? "not detected"}`);
+  console.log(`SDK: ${report.project.expoSdkMajor ?? "not detected"}`);
   console.log(`React Native: ${report.project.reactNativeVersion ?? "not detected"}`);
   console.log(`Status: ${report.summary.status.toUpperCase()}`);
   console.log("");
@@ -108,6 +186,9 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
   }
 
   console.log("");
+  printRecommendationsTable(report.recommendations);
+
+  console.log("");
   console.log("Next actions:");
   for (const action of report.nextActions) {
     console.log(`- ${action}`);
@@ -115,8 +196,73 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
 
   if (wroteLockfile) {
     console.log("");
-    console.log("Wrote nativeguard-lock.json");
+    console.log("Wrote nativeguard-lock.json (NativeGuard snapshot; package manager lockfiles were not changed).");
   }
+}
+
+function printRecommendationsTable(recommendations: Recommendation[]): void {
+  console.log("Recommendations:");
+  if (recommendations.length === 0) {
+    console.log("No recommendations.");
+    return;
+  }
+
+  const headers = ["Package", "Action", "From", "To", "Surfaces", "Evidence"];
+  const rows = recommendations.map(recommendation => [
+    recommendation.packageName,
+    formatRecommendationAction(recommendation.action),
+    recommendation.from ?? "",
+    recommendation.to ?? "",
+    recommendation.surfaces.map(formatRecommendationSurface).join(","),
+    formatEvidence(recommendation)
+  ]);
+  const widths = headers.map((header, column) =>
+    Math.max(header.length, ...rows.map(row => row[column]?.length ?? 0))
+  );
+
+  console.log(formatTableRow(headers, widths));
+  console.log(widths.map(width => "-".repeat(width)).join(" | "));
+  for (const row of rows) {
+    console.log(formatTableRow(row, widths));
+  }
+}
+
+function formatTableRow(cells: string[], widths: number[]): string {
+  return cells.map((cell, index) => cell.padEnd(widths[index] ?? cell.length)).join(" | ");
+}
+
+function formatRecommendationAction(action: RecommendationAction): string {
+  switch (action) {
+    case "bump":
+    case "pin":
+    case "leave":
+    case "exclude":
+      return action;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function formatRecommendationSurface(surface: RecommendationSurface): string {
+  switch (surface) {
+    case "eas":
+    case "local-native":
+    case "runtime":
+      return surface;
+    default: {
+      const exhaustive: never = surface;
+      return exhaustive;
+    }
+  }
+}
+
+function formatEvidence(recommendation: Recommendation): string {
+  if (recommendation.evidence.length === 0) return "";
+  return recommendation.evidence
+    .map(record => record.url ?? record.type)
+    .join(",");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -22,7 +22,7 @@ Preconditions:
 - `fixtures/sdk53-pager-view/package.json` still depends on `react-native-pager-view` `6.6.0` and `expo` `53.0.20`.
 - The tracked fixture is unmodified.
 
-- **Path entry.** Analyze the fixture by path. Run `.cursor/skills/verify-nativeguard/scripts/verify-doctor.sh drive --run-id pager-view-risky --feature doctor-risky-recommendation -- fixtures/sdk53-pager-view`. Exit code `1`. `stdout.json` parses as JSON with `schemaVersion` `"1.0.0"`, `summary.status` `"risky"`, `project.kind` `"expo-go"`, and `project.root` equal to the absolute path of `fixtures/sdk53-pager-view`.
+- **Path entry.** Analyze the fixture by path. Run `.cursor/skills/verify-nativeguard/scripts/verify-doctor.sh drive --run-id pager-view-risky --feature doctor-risky-recommendation -- fixtures/sdk53-pager-view`. Exit code `1`. `stdout.json` parses as JSON with `schemaVersion` `"1.0.0"`, `summary.status` `"risky"`, `project.kind` `"expo-prebuild"`, and `project.root` equal to the absolute path of `fixtures/sdk53-pager-view`.
 - **Bump recommendation.** In the same `stdout.json`, `recommendations` contains an object whose `action` is `"bump"`, `packageName` is `"react-native-pager-view"`, `from` is `"6.6.0"`, and `to` is `"6.7.1"`.
 - **Cwd entry.** Analyze the fixture as cwd. Run `.cursor/skills/verify-nativeguard/scripts/verify-doctor.sh drive --run-id pager-view-risky-cwd --feature doctor-risky-recommendation --cwd fixtures/sdk53-pager-view --`. Exit code `1`, `summary.status` `"risky"`, and `project.root` is the same absolute fixture path.
 - **Proof.** Keep both artifact directories. `exit-code.txt` is `1` and `stderr.txt` does not replace the JSON report. The tracked `fixtures/sdk53-pager-view` tree is unchanged, including `package-lock.json`.
@@ -33,3 +33,4 @@ Preconditions:
 - `--json` writes the report to stdout only. Assert `stdout.json`, not a human table on stdout.
 - `acceptedExceptions` cannot silence a `bump`. Do not use the leave/pin exception recipe on this fixture and call it stable.
 - `--sdk 54` hides the SDK 53 pager-view rule. Omit `--sdk` unless a different feature asks for it.
+- The fixture has `ios/` and `android/` (`.gitkeep`), so `project.kind` is `"expo-prebuild"`, not `"expo-go"`.

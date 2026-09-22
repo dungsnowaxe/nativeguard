@@ -78,9 +78,36 @@ The system SHALL provide structured JSON output for `nativeguard doctor` as a st
 - **WHEN** a user runs `nativeguard doctor --json`
 - **THEN** the CLI writes a JSON report containing schema version, project profile, rule-pack provenance, findings, summary status, and recommended next actions
 
+#### Scenario: Analysis JSON always includes frozen fields
+- **WHEN** analysis runs (including unsupported bare React Native)
+- **THEN** the JSON object always includes `schemaVersion`, `recommendations` (array), `summary.status`, `project.kind`, and `project.root`
+
+#### Scenario: JSON contract is additive
+- **WHEN** later versions add fields to the doctor JSON object at the same `schemaVersion`
+- **THEN** existing required fields remain present with the same meaning, and consumers may ignore unknown keys
+
 #### Scenario: JSON output is parseable
 - **WHEN** the CLI exits after `nativeguard doctor --json`
 - **THEN** the emitted output is valid JSON with no human-readable decoration mixed into stdout
+
+#### Scenario: Error JSON when analysis does not run
+- **WHEN** doctor fails before producing a report (for example `INVALID_SDK`)
+- **THEN** stdout is `{ schemaVersion, error: { code, message } }` and the process exits `1`
+
+### Requirement: Doctor exit codes
+The system SHALL freeze `nativeguard doctor` process exit codes so agents and CI can rely on them.
+
+#### Scenario: Clean or accepted exception exits 0
+- **WHEN** `summary.status` is `stable` or `accepted-exception`
+- **THEN** the process exits `0`
+
+#### Scenario: Risky or unsupported analysis exits 1
+- **WHEN** `summary.status` is `risky` or `unsupported` (including bare React Native)
+- **THEN** the process exits `1`
+
+#### Scenario: Analysis errors exit 1
+- **WHEN** analysis does not run (`INVALID_SDK`, `UNSUPPORTED_PROJECT`, `MISSING_PACKAGE_JSON`, or other `error.code` failures)
+- **THEN** the process exits `1`
 
 ### Requirement: Human-readable report
 The system SHALL provide a human-readable doctor report for terminal users.

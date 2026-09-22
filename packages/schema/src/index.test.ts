@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   LOCKFILE_SCHEMA_VERSION,
+  PROJECT_KINDS,
   RECOMMENDATION_ACTIONS,
   RECOMMENDATION_SURFACES,
   RULE_SCHEMA_VERSION,
+  STABILITY_STATUSES,
   validateCompatibilityRule,
   validateDoctorReport,
   validateLockfile,
@@ -39,13 +41,53 @@ test("validates report shape", () => {
     schemaVersion: "1.0.0",
     generatedAt: new Date().toISOString(),
     nativeguard: {},
+    project: { kind: "expo-prebuild", root: "/tmp/app" },
+    dependencySnapshot: {},
+    summary: { status: "stable" },
+    packageIssues: [],
+    findings: [],
+    recommendations: [],
+    nextActions: []
+  });
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(PROJECT_KINDS, ["expo-prebuild", "bare-react-native", "expo-go"]);
+  assert.deepEqual(STABILITY_STATUSES, ["stable", "accepted-exception", "risky", "unsupported"]);
+});
+
+test("requires schemaVersion, recommendations[], summary.status, project.kind, and project.root", () => {
+  const result = validateDoctorReport({
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
     project: {},
     dependencySnapshot: {},
     summary: {},
     packageIssues: [],
     findings: [],
-    recommendations: [],
     nextActions: []
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some(error => error.includes("schemaVersion")));
+  assert.ok(result.errors.some(error => error.includes("recommendations")));
+  assert.ok(result.errors.some(error => error.includes("summary.status")));
+  assert.ok(result.errors.some(error => error.includes("project.kind")));
+  assert.ok(result.errors.some(error => error.includes("project.root")));
+});
+
+test("allows additive unknown fields on doctor reports", () => {
+  const result = validateDoctorReport({
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: { kind: "expo-go", root: "/tmp/app" },
+    dependencySnapshot: {},
+    summary: { status: "risky" },
+    packageIssues: [],
+    findings: [],
+    recommendations: [],
+    nextActions: [],
+    futureField: { nested: true }
   });
 
   assert.equal(result.valid, true);
@@ -56,9 +98,9 @@ test("requires recommendations[] on doctor reports", () => {
     schemaVersion: "1.0.0",
     generatedAt: new Date().toISOString(),
     nativeguard: {},
-    project: {},
+    project: { kind: "expo-prebuild", root: "/tmp/app" },
     dependencySnapshot: {},
-    summary: {},
+    summary: { status: "stable" },
     packageIssues: [],
     findings: [],
     nextActions: []
@@ -145,9 +187,9 @@ test("allows acceptedExceptions on doctor reports", () => {
     schemaVersion: "1.0.0",
     generatedAt: new Date().toISOString(),
     nativeguard: {},
-    project: {},
+    project: { kind: "expo-prebuild", root: "/tmp/app" },
     dependencySnapshot: {},
-    summary: {},
+    summary: { status: "stable" },
     packageIssues: [],
     findings: [],
     recommendations: [],

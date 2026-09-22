@@ -2,10 +2,12 @@ export const DOCTOR_REPORT_SCHEMA_VERSION = "1.0.0";
 export const LOCKFILE_SCHEMA_VERSION = "1.0.0";
 export const RULE_SCHEMA_VERSION = "1.0.0";
 
-export type ProjectKind = "expo-prebuild" | "bare-react-native" | "expo-go";
+export const PROJECT_KINDS = ["expo-prebuild", "bare-react-native", "expo-go"] as const;
+export type ProjectKind = (typeof PROJECT_KINDS)[number];
 export type PackageManagerName = "npm" | "yarn" | "pnpm" | "bun" | "unknown";
 export type FindingSeverity = "info" | "warning" | "error";
-export type StabilityStatus = "stable" | "accepted-exception" | "risky" | "unsupported";
+export const STABILITY_STATUSES = ["stable", "accepted-exception", "risky", "unsupported"] as const;
+export type StabilityStatus = (typeof STABILITY_STATUSES)[number];
 export type Confidence = "low" | "medium" | "high";
 export const RECOMMENDATION_ACTIONS = ["bump", "pin", "leave", "exclude"] as const;
 export type RecommendationAction = (typeof RECOMMENDATION_ACTIONS)[number];
@@ -219,9 +221,20 @@ export function validateDoctorReport(value: unknown): ValidationResult {
   requireString(value, "schemaVersion", errors);
   requireString(value, "generatedAt", errors);
   if (!isRecord(value.nativeguard)) errors.push("nativeguard must be an object");
-  if (!isRecord(value.project)) errors.push("project must be an object");
+  if (!isRecord(value.project)) {
+    errors.push("project must be an object");
+  } else {
+    if (!isProjectKind(value.project.kind)) {
+      errors.push(`project.kind must be one of ${PROJECT_KINDS.join("|")}`);
+    }
+    requireString(value.project, "root", errors, "project.root");
+  }
   if (!isRecord(value.dependencySnapshot)) errors.push("dependencySnapshot must be an object");
-  if (!isRecord(value.summary)) errors.push("summary must be an object");
+  if (!isRecord(value.summary)) {
+    errors.push("summary must be an object");
+  } else if (!isStabilityStatus(value.summary.status)) {
+    errors.push(`summary.status must be one of ${STABILITY_STATUSES.join("|")}`);
+  }
   if (!Array.isArray(value.packageIssues)) errors.push("packageIssues must be an array");
   if (!Array.isArray(value.findings)) errors.push("findings must be an array");
   if (!Array.isArray(value.recommendations)) {
@@ -265,6 +278,14 @@ export function validateRecommendation(
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+export function isProjectKind(value: unknown): value is ProjectKind {
+  return PROJECT_KINDS.some(kind => kind === value);
+}
+
+export function isStabilityStatus(value: unknown): value is StabilityStatus {
+  return STABILITY_STATUSES.some(status => status === value);
 }
 
 export function isRecommendationAction(value: unknown): value is RecommendationAction {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { analyzeProject, NativeGuardError, writeNativeGuardLockfile } from "@nativeguard/core";
 import {
+  DOCTOR_REPORT_SCHEMA_VERSION,
   validateDoctorReport,
   type Recommendation,
   type RecommendationAction,
@@ -68,7 +69,7 @@ async function runDoctor(args: string[]): Promise<number> {
       process.stdout.write(
         `${JSON.stringify(
           {
-            schemaVersion: "1.0.0",
+            schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
             error: {
               code: error instanceof NativeGuardError ? error.code : "UNKNOWN_ERROR",
               message
@@ -162,7 +163,14 @@ Usage:
 
   Exit codes:
       0  summary.status is stable or accepted-exception
-      1  summary.status is risky or unsupported, or the run failed (INVALID_SDK, ...)
+      1  summary.status is risky or unsupported (including bare React Native)
+      1  analysis did not run (INVALID_SDK, UNSUPPORTED_PROJECT, MISSING_PACKAGE_JSON, ...)
+
+  JSON (--json):
+      Analysis reports always include schemaVersion, recommendations[],
+      summary.status, project.kind, and project.root. The contract is
+      additive; ignore unknown fields. Failures emit
+      { schemaVersion, error: { code, message } } and exit 1.
 
   Accepted pin/leave/exclude findings:
       Add an acceptedExceptions[] entry to nativeguard-lock.json (package, version,

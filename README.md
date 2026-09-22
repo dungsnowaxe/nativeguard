@@ -46,11 +46,11 @@ nativeguard doctor --write-snapshot
 
 | Flag | Meaning |
 | --- | --- |
-| `--json` | Machine-readable report. Frozen `recommendations[]`: `action` is `bump \| pin \| leave \| exclude`, plus `evidence` and `surfaces`. |
+| `--json` | Machine-readable report. When analysis runs, always includes `schemaVersion`, `recommendations[]`, `summary.status`, `project.kind`, and `project.root`. Frozen recommendation `action` is `bump \| pin \| leave \| exclude`, plus `evidence` and `surfaces`. |
 | `--sdk <major\|soft>` | Filter rules to that Expo SDK major (`--sdk 54`, `--sdk=54`, `--sdk 54beta`, `--sdk 54.0.0-beta.1`). If omitted, NativeGuard parses Expo major from the lockfile-resolved `expo` version, else the declared `expo` range, including unambiguous prerelease/canary forms. Digit-prefixed garbage (`54xyz`) exits `1` with `INVALID_SDK`. |
 | `--write-snapshot` | Write `nativeguard-lock.json` (alias: `--write-lockfile`). NativeGuard snapshot only — never npm/Yarn/pnpm/Bun lockfiles. Preserves `acceptedExceptions`. |
 
-Bare React Native is detected and reported as `summary.status: "unsupported"`, not stable. Analysis is skipped.
+Bare React Native is detected and reported as `summary.status: "unsupported"` with **exit `1`**, not stable and not an error payload. Compatibility rules are skipped.
 
 ## Remediation ladder
 
@@ -71,15 +71,22 @@ Examples of evidence behind the default pack:
 
 ## Exit codes
 
+`nativeguard doctor` uses only `0` and `1`. `--version` and `--help` exit `0`. Unknown commands exit `1`.
+
+When analysis runs, the process exit code follows `summary.status`:
+
 | Exit | `summary.status` | Meaning |
 | --- | --- | --- |
-| `0` | `stable` | No compatibility findings. |
+| `0` | `stable` | Clean: no compatibility findings. |
 | `0` | `accepted-exception` | Matching `pin` / `leave` / `exclude` findings were recorded in `acceptedExceptions` (reason required). Warnings, not new risk. |
 | `1` | `risky` | Unaccepted findings remain, including every `bump`. |
-| `1` | `unsupported` | Project or resolver gap; not a silent stable. |
-| `1` | *(error)* | Run failed (`INVALID_SDK`, invalid snapshot, missing project, …). |
+| `1` | `unsupported` | Analysis ran but did not produce a supported result. Includes **bare React Native** (rules skipped), unresolved `catalog:` / lockfile gaps, missing install lockfile, and binary `bun.lockb` without text `bun.lock`. Never silent `stable`. |
 
-`--json` error payloads include `error.code` (for example `INVALID_SDK`). NativeGuard never applies pins, bumps, or lockfile edits.
+When analysis does not run, doctor still exits **`1`**. `--json` emits `{ schemaVersion, error: { code, message } }` instead of a report. Codes today include `INVALID_SDK` (garbage `--sdk` such as `54xyz`), `MISSING_PACKAGE_JSON`, `UNSUPPORTED_PROJECT` (no `expo` or `react-native` in `package.json`), `INVALID_LOCKFILE`, `UNSUPPORTED_LOCKFILE_SCHEMA`, `INVALID_ARGS`, and `INVALID_REPORT`.
+
+Bare React Native is `summary.status: "unsupported"` and **exit `1`**, not an error payload.
+
+NativeGuard never applies pins, bumps, or lockfile edits.
 
 ## Accepted pin / leave / exclude (`nativeguard-lock.json`)
 
@@ -105,9 +112,44 @@ Examples of evidence behind the default pack:
 }
 ```
 
-## Contracts
+## JSON contract (`nativeguard doctor --json`)
 
-- `nativeguard doctor --json` includes `findings`, `packageIssues`, `recommendations[]`, and `acceptedExceptions` copied from the snapshot.
+Stdout is JSON-only. `schemaVersion` is `"1.0.0"`.
+
+The contract is **additive**: new fields may appear without a version bump. Removing a field or changing its meaning requires a `schemaVersion` bump. Consumers should ignore unknown keys.
+
+### Analysis report
+
+When analysis runs (including `unsupported` reports such as bare React Native), the object **always** includes:
+
+| Field | Meaning |
+| --- | --- |
+| `schemaVersion` | Report schema version (`"1.0.0"`). |
+| `recommendations` | Array of recommendation objects. Empty when there are none (clean or unsupported bare RN). |
+| `summary.status` | `stable` \| `accepted-exception` \| `risky` \| `unsupported`. |
+| `project.kind` | `expo-prebuild` \| `expo-go` \| `bare-react-native`. |
+| `project.root` | Absolute path of the analyzed project. |
+
+The same object also includes `generatedAt`, `nativeguard`, `dependencySnapshot`, `findings`, `packageIssues`, `nextActions`, and `acceptedExceptions` (copied from `nativeguard-lock.json` when present).
+
+### Error payload
+
+When analysis does not run:
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "error": {
+    "code": "INVALID_SDK",
+    "message": "..."
+  }
+}
+```
+
+Error payloads do not include `recommendations`, `summary`, or `project`.
+
+### Lockfile resolve
+
 - Rules match lockfile-resolved versions from `package-lock.json`, `yarn.lock` (classic v1 and Berry), `pnpm-lock.yaml`, and text `bun.lock`. Declared ranges stay in the dependency snapshot for display; resolved versions are in `resolvedVersions`.
 - Nested workspace packages read the workspace-root lockfile. `catalog:`, Yarn `resolutions`, and npm/pnpm `overrides` are applied when they resolve to a concrete version. Unresolved specifiers (including `catalog:` without a catalog, and binary `bun.lockb` without `bun.lock`) emit an explicit `unsupported` finding — never silent `stable`.
 - `nativeguard-lock.json` is a stability snapshot (recommendations + accepted exceptions). It is not a replacement for npm, Yarn, pnpm, or Bun lockfiles.

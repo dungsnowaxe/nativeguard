@@ -22,7 +22,6 @@ export const bundledRules: CompatibilityRule[] = [
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
-      packageManagers: ["npm"],
       newArchitecture: true
     },
     unless: {
@@ -74,8 +73,7 @@ export const bundledRules: CompatibilityRule[] = [
     affectedRange: ">=4",
     context: {
       projectKinds: [...EXPO_KINDS],
-      expoSdk: ["53"],
-      packageManagers: ["npm"]
+      expoSdk: ["53"]
     },
     outcome: "risky",
     confidence: "high",
@@ -116,7 +114,6 @@ export const bundledRules: CompatibilityRule[] = [
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
-      packageManagers: ["npm"],
       newArchitecture: false
     },
     outcome: "risky",
@@ -157,8 +154,7 @@ export const bundledRules: CompatibilityRule[] = [
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["53"],
-      reactNative: ["0.79.x"],
-      packageManagers: ["npm"]
+      reactNative: ["0.79.x"]
     },
     outcome: "risky",
     confidence: "high",
@@ -198,8 +194,7 @@ export const bundledRules: CompatibilityRule[] = [
     affectedRange: "*",
     context: {
       projectKinds: [...EXPO_KINDS],
-      expoSdk: [">=50"],
-      packageManagers: ["npm"]
+      expoSdk: [">=50"]
     },
     outcome: "risky",
     confidence: "high",
@@ -238,7 +233,6 @@ export const bundledRules: CompatibilityRule[] = [
     affectedRange: ">=2",
     context: {
       projectKinds: [...EXPO_KINDS],
-      packageManagers: ["npm"],
       newArchitecture: false
     },
     outcome: "risky",
@@ -279,8 +273,7 @@ export const bundledRules: CompatibilityRule[] = [
     affectedRange: "*",
     context: {
       projectKinds: ["expo-go"],
-      expoSdk: ["54"],
-      packageManagers: ["npm"]
+      expoSdk: ["54"]
     },
     unless: {
       range: "~4.16.0"
@@ -324,7 +317,6 @@ export const bundledRules: CompatibilityRule[] = [
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
-      packageManagers: ["npm"],
       requiresPackages: ["react-native-gesture-handler"]
     },
     outcome: "risky",
@@ -368,7 +360,6 @@ export const optionalRules: CompatibilityRule[] = [
     affectedRange: "*",
     context: {
       projectKinds: ["expo-prebuild"],
-      packageManagers: ["npm"],
       newArchitecture: true
     },
     outcome: "stable",

@@ -29,6 +29,7 @@ export interface DependencySnapshot {
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
   resolvedVersions?: Record<string, string>;
+  unresolvedSpecifiers?: Record<string, string>;
   lockfile?: {
     path: string;
     lockfileVersion?: number;

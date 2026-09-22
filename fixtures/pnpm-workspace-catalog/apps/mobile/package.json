@@ -1,0 +1,9 @@
+{
+  "name": "mobile",
+  "private": true,
+  "dependencies": {
+    "expo": "catalog:",
+    "react-native": "catalog:",
+    "react-native-pager-view": "catalog:"
+  }
+}

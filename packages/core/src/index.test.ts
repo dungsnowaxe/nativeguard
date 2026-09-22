@@ -239,10 +239,107 @@ test("does not match a declared range when the lockfile resolved version is outs
   );
 });
 
+const lockResolvedPagerViewFixtures = [
+  { dir: "lock-npm-range-miss-pager-view", packageManager: "npm", lockfile: "package-lock.json" },
+  { dir: "lock-yarn-classic-range-miss-pager-view", packageManager: "yarn", lockfile: "yarn.lock" },
+  { dir: "lock-yarn-berry-range-miss-pager-view", packageManager: "yarn", lockfile: "yarn.lock" },
+  { dir: "lock-pnpm-range-miss-pager-view", packageManager: "pnpm", lockfile: "pnpm-lock.yaml" },
+  { dir: "lock-bun-range-miss-pager-view", packageManager: "bun", lockfile: "bun.lock" }
+] as const;
+
+const fixturesRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures");
+
+for (const lockFixture of lockResolvedPagerViewFixtures) {
+  test(`matches lock-resolved pager-view for ${lockFixture.dir}`, async () => {
+    const report = await analyzeProject({
+      rootDir: path.join(fixturesRoot, lockFixture.dir),
+      cliVersion: "0.0.0"
+    });
+
+    assert.equal(report.project.packageManager, lockFixture.packageManager);
+    assert.equal(report.dependencySnapshot.lockfile?.path, lockFixture.lockfile);
+    assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+    assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+    assert.equal(
+      report.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
+      "6.6.0"
+    );
+    assert.equal(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"), true);
+    assert.equal(report.summary.status, "risky");
+    assert.equal(
+      report.findings.some(
+        finding => finding.id.startsWith("finding-package-manager-") && finding.id !== "finding-package-manager-bun-lockb"
+      ),
+      false
+    );
+  });
+}
+
+test("reads the pnpm workspace catalog from a nested package", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.packageManager, "pnpm");
+  assert.equal(report.dependencySnapshot.lockfile?.path, "../../pnpm-lock.yaml");
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.equal(report.project.expoSdkMajor, "53");
+  assert.equal(report.project.reactNativeVersion, "0.79.5");
+  assert.equal(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"), true);
+  assert.equal(report.summary.status, "risky");
+});
+
+test("applies yarn resolutions of a known-bad pager-view", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "yarn-resolutions-pager-view"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.packageManager, "yarn");
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.equal(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"), true);
+  assert.equal(report.summary.status, "risky");
+});
+
+test("emits unsupported instead of silent stable when catalog: cannot be resolved", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "unresolved-catalog"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], undefined);
+  assert.equal(report.dependencySnapshot.unresolvedSpecifiers?.["react-native-pager-view"], "catalog:");
+  assert.equal(report.findings.some(finding => finding.id === "finding-unresolved-versions"), true);
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
+});
+
+test("emits unsupported for bun.lockb without a text bun.lock", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "~53.0.0",
+      "react-native": "0.79.5",
+      "react-native-pager-view": "^6.7.1"
+    },
+    directories: ["ios", "android"],
+    lockfile: "bun.lockb"
+  });
+
+  const report = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(report.project.packageManager, "bun");
+  assert.equal(report.findings.some(finding => finding.id === "finding-package-manager-bun-lockb"), true);
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
+});
+
 async function fixture(options: {
   dependencies: Record<string, string>;
   directories?: string[];
-  lockfile?: "npm" | "yarn" | "pnpm" | "bun";
+  lockfile?: "npm" | "yarn" | "pnpm" | "bun" | "bun.lockb";
   resolvedVersions?: Record<string, string>;
 }): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-fixture-"));
@@ -272,6 +369,9 @@ async function fixture(options: {
   }
   if (options.lockfile === "bun") {
     await writeFile(path.join(root, "bun.lock"), "");
+  }
+  if (options.lockfile === "bun.lockb") {
+    await writeFile(path.join(root, "bun.lockb"), Buffer.from("bun-binary-lockfile"));
   }
 
   return root;

@@ -37,16 +37,39 @@ The system SHALL detect the project profile needed for compatibility analysis, i
 - **WHEN** a project contains Expo configuration without generated native project directories
 - **THEN** the CLI classifies the project as Expo Go
 
-### Requirement: Package manager priority
-The system SHALL support npm first and expose package-manager analysis through an adapter boundary for later Yarn, pnpm, and Bun support.
+### Requirement: Package manager lockfile resolve
+The system SHALL resolve installed versions from npm, Yarn (classic v1 and Berry), pnpm, and Bun text lockfiles when present, and SHALL prefer those resolved versions for rule matching.
 
 #### Scenario: npm project is analyzed
 - **WHEN** a project uses npm package metadata and an npm lockfile
-- **THEN** the CLI analyzes dependencies using the npm adapter
+- **THEN** the CLI analyzes dependencies using lockfile-resolved versions while keeping declared ranges in the dependency snapshot
 
-#### Scenario: later package manager is detected
-- **WHEN** a project uses Yarn, pnpm, or Bun before full support is implemented
-- **THEN** the CLI identifies the package manager and reports the current support limitation without misclassifying it as npm
+#### Scenario: Yarn, pnpm, or Bun lockfile is present
+- **WHEN** a project has `yarn.lock`, `pnpm-lock.yaml`, or text `bun.lock`
+- **THEN** the CLI resolves installed versions from that lockfile and matches rules against those versions
+
+#### Scenario: declared range would miss a lock-resolved known-bad
+- **WHEN** `package.json` declares a range that does not match a bundled rule and the lockfile resolves that package to a known-bad version
+- **THEN** doctor reports the finding using the lock-resolved version
+
+#### Scenario: binary Bun lockfile cannot be parsed
+- **WHEN** a project has only `bun.lockb` and no text `bun.lock`
+- **THEN** the CLI reports an explicit unsupported finding and does not classify the project as stable
+
+### Requirement: Workspace catalog and overrides
+The system SHALL analyze a target package directory and read the workspace-root lockfile, catalogs, resolutions, and overrides when the package is a workspace member.
+
+#### Scenario: nested workspace package
+- **WHEN** `nativeguard doctor` runs in a nested workspace package or with an optional project path
+- **THEN** the CLI reads the workspace-root lockfile for that package
+
+#### Scenario: catalog or override resolves
+- **WHEN** a dependency uses `catalog:` or is pinned by Yarn `resolutions` or npm/pnpm `overrides` to a concrete version
+- **THEN** the CLI uses that effective version for rule matching
+
+#### Scenario: resolution is unknown
+- **WHEN** a specifier such as `catalog:` cannot be resolved from the lockfile, catalog, or overrides
+- **THEN** the CLI emits an explicit unsupported finding and does not return silent stable
 
 ### Requirement: JSON output contract
 The system SHALL provide structured JSON output for `nativeguard doctor` as a stable machine-readable contract.

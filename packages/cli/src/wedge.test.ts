@@ -30,6 +30,21 @@ test("wedge: doctor --json on pager-view fixture emits bump", async () => {
   );
 });
 
+test("wedge: doctor --json lock-resolved pager-view fires for npm yarn pnpm bun", async () => {
+  for (const dir of [
+    "lock-npm-range-miss-pager-view",
+    "lock-yarn-classic-range-miss-pager-view",
+    "lock-pnpm-range-miss-pager-view",
+    "lock-bun-range-miss-pager-view"
+  ]) {
+    const parsed = await doctorJson(path.join(fixturesRoot, dir));
+    assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+    assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+    assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+    assert.equal(parsed.summary.status, "risky");
+  }
+});
+
 test("wedge: --sdk 54 hides the SDK 53 pager-view rule", async () => {
   const previous = process.cwd();
   process.chdir(path.join(fixturesRoot, "sdk53-pager-view"));
@@ -98,6 +113,10 @@ interface DoctorJson {
   project: { kind?: string; expoSdkMajor?: string };
   summary: { status: string };
   findings: Array<{ ruleId?: string; status?: string }>;
+  dependencySnapshot: {
+    dependencies: Record<string, string>;
+    resolvedVersions?: Record<string, string>;
+  };
   recommendations: Array<{
     action: (typeof RECOMMENDATION_ACTIONS)[number];
     packageName: string;

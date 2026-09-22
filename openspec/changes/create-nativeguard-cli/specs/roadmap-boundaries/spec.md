@@ -16,11 +16,15 @@ The system SHALL keep first-version behavior focused on offline local analysis a
 - **THEN** the CLI does not require a hosted rules registry or network access
 
 ### Requirement: Monorepo support roadmap
-The system SHALL treat deep analysis of user monorepos as a roadmap capability rather than a first-version requirement.
+The system SHALL treat deep analysis of user monorepos (Turborepo, Nx, and task-graph orchestration) as a roadmap capability rather than a first-version requirement. Workspace lockfile reads, catalogs, resolutions, and overrides for a single target package are in first-version scope.
 
 #### Scenario: User project is a monorepo
-- **WHEN** `nativeguard doctor` detects workspace metadata beyond first-version support
-- **THEN** the CLI reports that deep monorepo support is not yet available instead of returning misleading single-project results
+- **WHEN** `nativeguard doctor` is asked to orchestrate a full Turborepo or Nx graph
+- **THEN** the CLI does not claim that deep monorepo orchestration is available
+
+#### Scenario: Nested workspace package
+- **WHEN** `nativeguard doctor` analyzes a nested workspace package
+- **THEN** the CLI reads the workspace-root lockfile and does not return misleading stable results when versions cannot be resolved
 
 ### Requirement: Future agent and GitHub Action compatibility
 The system SHALL preserve contracts that allow future PR review, GitHub Action, MCP, and agent integrations to build on first-version output.

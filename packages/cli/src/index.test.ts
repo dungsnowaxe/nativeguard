@@ -232,6 +232,95 @@ test("matches doctor JSON against npm resolved package versions", async () => {
   }
 });
 
+const fixturesRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures");
+
+const lockResolvedDoctorFixtures = [
+  { dir: "lock-npm-range-miss-pager-view", packageManager: "npm" },
+  { dir: "lock-yarn-classic-range-miss-pager-view", packageManager: "yarn" },
+  { dir: "lock-yarn-berry-range-miss-pager-view", packageManager: "yarn" },
+  { dir: "lock-pnpm-range-miss-pager-view", packageManager: "pnpm" },
+  { dir: "lock-bun-range-miss-pager-view", packageManager: "bun" }
+] as const;
+
+for (const lockFixture of lockResolvedDoctorFixtures) {
+  test(`doctor --json matches lock-resolved pager-view for ${lockFixture.packageManager} (${lockFixture.dir})`, async () => {
+    const output = await captureStdout(() =>
+      main(["doctor", "--json", path.join(fixturesRoot, lockFixture.dir)])
+    );
+    const parsed = parseCapturedJson(output.stdout) as {
+      project: { packageManager?: string };
+      summary: { status: string };
+      dependencySnapshot: {
+        dependencies: Record<string, string>;
+        resolvedVersions?: Record<string, string>;
+      };
+      findings: Array<{ ruleId?: string }>;
+      packageIssues: Array<{ packageName: string; installedVersion: string }>;
+    };
+    assert.equal(output.exitCode, 1);
+    assert.equal(parsed.project.packageManager, lockFixture.packageManager);
+    assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+    assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+    assert.equal(
+      parsed.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
+      "6.6.0"
+    );
+    assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+    assert.equal(parsed.summary.status, "risky");
+  });
+}
+
+test("doctor [path] analyzes a nested pnpm workspace package", async () => {
+  const output = await captureStdout(() =>
+    main(["doctor", "--json", path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile")])
+  );
+  const parsed = parseCapturedJson(output.stdout) as {
+    project: { packageManager?: string; expoSdkMajor?: string };
+    dependencySnapshot: {
+      dependencies: Record<string, string>;
+      resolvedVersions?: Record<string, string>;
+      lockfile?: { path?: string };
+    };
+    findings: Array<{ ruleId?: string }>;
+    summary: { status: string };
+  };
+  assert.equal(parsed.project.packageManager, "pnpm");
+  assert.equal(parsed.project.expoSdkMajor, "53");
+  assert.equal(parsed.dependencySnapshot.lockfile?.path, "../../pnpm-lock.yaml");
+  assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
+  assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.equal(parsed.summary.status, "risky");
+});
+
+test("doctor --json on yarn resolutions fires the lock-resolved known-bad", async () => {
+  const output = await captureStdout(() =>
+    main(["doctor", "--json", path.join(fixturesRoot, "yarn-resolutions-pager-view")])
+  );
+  const parsed = parseCapturedJson(output.stdout) as {
+    dependencySnapshot: { resolvedVersions?: Record<string, string> };
+    findings: Array<{ ruleId?: string }>;
+    summary: { status: string };
+  };
+  assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.equal(parsed.summary.status, "risky");
+});
+
+test("doctor --json on unresolved catalog: is unsupported, not stable", async () => {
+  const output = await captureStdout(() =>
+    main(["doctor", "--json", path.join(fixturesRoot, "unresolved-catalog")])
+  );
+  const parsed = parseCapturedJson(output.stdout) as {
+    summary: { status: string };
+    findings: Array<{ id?: string }>;
+  };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.summary.status, "unsupported");
+  assert.notEqual(parsed.summary.status, "stable");
+  assert.ok(parsed.findings.some(finding => finding.id === "finding-unresolved-versions"));
+});
+
 test("reports the bare React Native fixture as unsupported, not stable", async () => {
   const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/bare-react-native");
   const previous = process.cwd();

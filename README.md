@@ -22,12 +22,13 @@ Equivalent:
 node packages/cli/dist/index.js doctor --json
 ```
 
-`nativeguard doctor` analyzes **the current working directory**. To dogfood a fixture:
+`nativeguard doctor` analyzes **the current working directory**, or an optional project path:
 
 ```sh
 pnpm build
-(cd fixtures/sentry-expo-sdk54 && node ../../packages/cli/dist/index.js doctor --json)
-(cd fixtures/sdk53-pager-view && node ../../packages/cli/dist/index.js doctor --json)
+node packages/cli/dist/index.js doctor --json fixtures/sentry-expo-sdk54
+node packages/cli/dist/index.js doctor --json fixtures/lock-pnpm-range-miss-pager-view
+(cd fixtures/pnpm-workspace-catalog/apps/mobile && node ../../../../packages/cli/dist/index.js doctor --json)
 ```
 
 The workspace script runs `node packages/cli/dist/index.js`. The CLI strips a leading `--` from argv, so `pnpm nativeguard -- doctor --json` still runs doctor.
@@ -36,6 +37,7 @@ The workspace script runs `node packages/cli/dist/index.js`. The CLI strips a le
 
 ```sh
 nativeguard doctor
+nativeguard doctor [path]
 nativeguard doctor --json
 nativeguard doctor --sdk 54
 nativeguard doctor --write-snapshot
@@ -44,7 +46,7 @@ nativeguard doctor --write-snapshot
 | Flag | Meaning |
 | --- | --- |
 | `--json` | Machine-readable report. Frozen `recommendations[]`: `action` is `bump \| pin \| leave \| exclude`, plus `evidence` and `surfaces`. |
-| `--sdk <major>` | Filter rules to that Expo SDK major (`--sdk 54` or `--sdk=54`). If omitted, NativeGuard parses Expo major from `package-lock.json` resolved `expo`, else the declared `expo` range. |
+| `--sdk <major>` | Filter rules to that Expo SDK major (`--sdk 54` or `--sdk=54`). If omitted, NativeGuard parses Expo major from the lockfile-resolved `expo` version, else the declared `expo` range. |
 | `--write-snapshot` | Write `nativeguard-lock.json` (alias: `--write-lockfile`). NativeGuard snapshot only — never npm/Yarn/pnpm/Bun lockfiles. Preserves `acceptedExceptions`. |
 
 Bare React Native is detected and reported as `summary.status: "unsupported"`, not stable. Analysis is skipped.
@@ -92,9 +94,10 @@ Examples of evidence behind the default pack:
 ## Contracts
 
 - `nativeguard doctor --json` includes `findings`, `packageIssues`, `recommendations[]`, and `acceptedExceptions` copied from the snapshot.
-- When `package-lock.json` is present, rules match `packages["node_modules/<name>"].version`. Declared ranges stay in the dependency snapshot for display.
+- Rules match lockfile-resolved versions from `package-lock.json`, `yarn.lock` (classic v1 and Berry), `pnpm-lock.yaml`, and text `bun.lock`. Declared ranges stay in the dependency snapshot for display; resolved versions are in `resolvedVersions`.
+- Nested workspace packages read the workspace-root lockfile. `catalog:`, Yarn `resolutions`, and npm/pnpm `overrides` are applied when they resolve to a concrete version. Unresolved specifiers (including `catalog:` without a catalog, and binary `bun.lockb` without `bun.lock`) emit an explicit `unsupported` finding — never silent `stable`.
 - `nativeguard-lock.json` is a stability snapshot (recommendations + accepted exceptions). It is not a replacement for npm, Yarn, pnpm, or Bun lockfiles.
 
 ## Out of scope (v1)
 
-Yarn/pnpm/Bun analysis, apply mode, GitHub Action review, hosted rule ingest, Expo compatibility-table ingest, and package-lock mutation.
+Apply mode, GitHub Action review, hosted rule ingest, Expo compatibility-table ingest, package-lock mutation, and full turborepo/nx orchestration. Workspace lockfile + catalog/resolutions/overrides are in scope; deep monorepo task-graph analysis is not.

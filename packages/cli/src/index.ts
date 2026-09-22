@@ -36,9 +36,9 @@ async function runDoctor(args: string[]): Promise<number> {
   const json = args.includes("--json");
 
   try {
-    const { writeLockfile, sdk } = parseDoctorArgs(args);
+    const { writeLockfile, sdk, rootDir } = parseDoctorArgs(args);
     const report = await analyzeProject({
-      rootDir: process.cwd(),
+      rootDir,
       cliVersion: CLI_VERSION,
       ...(sdk ? { sdk } : {})
     });
@@ -52,7 +52,7 @@ async function runDoctor(args: string[]): Promise<number> {
     }
 
     if (writeLockfile) {
-      await writeNativeGuardLockfile(report, process.cwd());
+      await writeNativeGuardLockfile(report, rootDir);
     }
 
     if (json) {
@@ -85,10 +85,16 @@ async function runDoctor(args: string[]): Promise<number> {
   }
 }
 
-function parseDoctorArgs(args: string[]): { json: boolean; writeLockfile: boolean; sdk?: string } {
+function parseDoctorArgs(args: string[]): {
+  json: boolean;
+  writeLockfile: boolean;
+  sdk?: string;
+  rootDir: string;
+} {
   let json = false;
   let writeLockfile = false;
   let sdk: string | undefined;
+  let rootDir: string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -121,10 +127,21 @@ function parseDoctorArgs(args: string[]): { json: boolean; writeLockfile: boolea
         );
       }
       sdk = value;
+      continue;
     }
+    if (arg?.startsWith("--")) {
+      throw new NativeGuardError(`Unknown doctor option: ${arg}`, "INVALID_ARGS");
+    }
+    if (rootDir) {
+      throw new NativeGuardError(
+        "doctor accepts at most one project path. Usage: nativeguard doctor [path] [--json] [--write-snapshot] [--sdk <major>]",
+        "INVALID_ARGS"
+      );
+    }
+    rootDir = arg;
   }
 
-  return { json, writeLockfile, ...(sdk ? { sdk } : {}) };
+  return { json, writeLockfile, rootDir: rootDir ?? process.cwd(), ...(sdk ? { sdk } : {}) };
 }
 
 function printHelp(): void {
@@ -132,7 +149,7 @@ function printHelp(): void {
 
 Usage:
   nativeguard --version
-  nativeguard doctor [--json] [--write-snapshot] [--sdk <major>]
+  nativeguard doctor [path] [--json] [--write-snapshot] [--sdk <major>]
 
   --write-snapshot, --write-lockfile
       Write nativeguard-lock.json (NativeGuard snapshot only).

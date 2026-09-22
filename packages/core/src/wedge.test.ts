@@ -129,6 +129,56 @@ test("wedge: rules match npm lockfile-resolved versions, not declared ranges", a
   );
 });
 
+const lockResolvedPagerViewFixtures = [
+  "lock-npm-range-miss-pager-view",
+  "lock-yarn-classic-range-miss-pager-view",
+  "lock-yarn-berry-range-miss-pager-view",
+  "lock-pnpm-range-miss-pager-view",
+  "lock-bun-range-miss-pager-view"
+] as const;
+
+for (const dir of lockResolvedPagerViewFixtures) {
+  test(`wedge: ${dir} fires pager-view on lock-resolved 6.6.0 not declared ^6.7.1`, async () => {
+    const report = await analyzeProject({
+      rootDir: path.join(fixturesRoot, dir),
+      cliVersion: "0.0.0"
+    });
+    assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+    assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+    assert.ok(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+    assert.equal(report.summary.status, "risky");
+  });
+}
+
+test("wedge: pnpm workspace catalog resolves from the nested package", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile"),
+    cliVersion: "0.0.0"
+  });
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.ok(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+});
+
+test("wedge: yarn resolutions override of a known-bad fires", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "yarn-resolutions-pager-view"),
+    cliVersion: "0.0.0"
+  });
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.ok(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+});
+
+test("wedge: unresolved catalog: is unsupported, not silent stable", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "unresolved-catalog"),
+    cliVersion: "0.0.0"
+  });
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
+  assert.ok(report.findings.some(finding => finding.id === "finding-unresolved-versions"));
+});
+
 test("wedge: bare React Native is unsupported, not stable", async () => {
   const report = await analyzeProject({
     rootDir: path.join(fixturesRoot, "bare-react-native"),

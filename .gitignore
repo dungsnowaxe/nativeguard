@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 nativeguard-lock.json
 .DS_Store
+.cursor/skills/verify-nativeguard/artifacts/

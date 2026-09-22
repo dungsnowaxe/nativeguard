@@ -140,6 +140,37 @@ const curatedFixtures = [
         surfaces: ["runtime"]
       }
     ]
+  },
+  {
+    dir: "sdk54-leave-expo-av",
+    ruleId: "sdk54-leave-expo-av-pending-audio-video-migration",
+    evidenceUrls: [
+      "https://docs.expo.dev/versions/v54.0.0/sdk/av",
+      "https://expo.dev/blog/upgrading-to-sdk-55"
+    ],
+    recommendations: [
+      {
+        action: "leave",
+        packageName: "expo-av",
+        surfaces: ["eas", "local-native", "runtime"]
+      }
+    ]
+  },
+  {
+    dir: "sdk54-beta-screens-expo-go",
+    ruleId: "sdk54-pin-screens-tilde-4.16",
+    evidenceUrls: [
+      "https://github.com/software-mansion/react-native-screens/issues/3470",
+      "https://github.com/software-mansion/react-native-screens/issues/3496"
+    ],
+    recommendations: [
+      {
+        action: "pin",
+        packageName: "react-native-screens",
+        to: "~4.16.0",
+        surfaces: ["eas", "runtime"]
+      }
+    ]
   }
 ] as const;
 

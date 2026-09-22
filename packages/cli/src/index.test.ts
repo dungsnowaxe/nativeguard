@@ -179,8 +179,13 @@ test("filters doctor rules with --sdk", async () => {
   process.chdir(root);
   try {
     const sdk54 = await captureStdout(() => main(["doctor", "--json", "--sdk", "54"]));
+    const sdk54beta = await captureStdout(() => main(["doctor", "--json", "--sdk", "54beta"]));
     const sdk53 = await captureStdout(() => main(["doctor", "--json", "--sdk=53"]));
     const parsed54 = parseCapturedJson(sdk54.stdout) as {
+      project: { expoSdkMajor?: string };
+      findings: Array<{ ruleId?: string }>;
+    };
+    const parsed54beta = parseCapturedJson(sdk54beta.stdout) as {
       project: { expoSdkMajor?: string };
       findings: Array<{ ruleId?: string }>;
     };
@@ -190,8 +195,13 @@ test("filters doctor rules with --sdk", async () => {
     };
 
     assert.equal(parsed54.project.expoSdkMajor, "54");
+    assert.equal(parsed54beta.project.expoSdkMajor, "54");
     assert.equal(
       parsed54.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+      false
+    );
+    assert.equal(
+      parsed54beta.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
       false
     );
     assert.equal(parsed53.project.expoSdkMajor, "53");
@@ -270,12 +280,38 @@ for (const lockFixture of lockResolvedDoctorFixtures) {
   });
 }
 
-test("doctor [path] analyzes a nested pnpm workspace package", async () => {
-  const output = await captureStdout(() =>
-    main(["doctor", "--json", path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile")])
-  );
+test("rejects garbage --sdk values with INVALID_SDK", async () => {
+  const fixturePath = path.join(fixturesRoot, "sdk53-pager-view");
+  const garbage = await captureStdout(() => main(["doctor", "--json", "--sdk", "54xyz", fixturePath]));
+  const parsed = parseCapturedJson(garbage.stdout) as {
+    error?: { code?: string; message?: string };
+  };
+  assert.equal(garbage.exitCode, 1);
+  assert.equal(parsed.error?.code, "INVALID_SDK");
+  assert.match(parsed.error?.message ?? "", /54xyz/);
+});
+
+test("doctor --json on ~54.0.0-beta.1 fixture uses SDK 54 rules", async () => {
+  const fixturePath = path.join(fixturesRoot, "sdk54-beta-screens-expo-go");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
   const parsed = parseCapturedJson(output.stdout) as {
-    project: { packageManager?: string; expoSdkMajor?: string };
+    project: { expoSdkMajor?: string; kind?: string; root?: string };
+    findings: Array<{ ruleId?: string }>;
+    summary: { status: string };
+  };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.project.expoSdkMajor, "54");
+  assert.equal(parsed.project.kind, "expo-go");
+  assert.equal(parsed.project.root, path.resolve(fixturePath));
+  assert.ok(parsed.findings.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"));
+  assert.equal(parsed.summary.status, "risky");
+});
+
+test("doctor [path] analyzes a nested pnpm workspace package", async () => {
+  const fixturePath = path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as {
+    project: { packageManager?: string; expoSdkMajor?: string; root?: string };
     dependencySnapshot: {
       dependencies: Record<string, string>;
       resolvedVersions?: Record<string, string>;
@@ -286,6 +322,7 @@ test("doctor [path] analyzes a nested pnpm workspace package", async () => {
   };
   assert.equal(parsed.project.packageManager, "pnpm");
   assert.equal(parsed.project.expoSdkMajor, "53");
+  assert.equal(parsed.project.root, path.resolve(fixturePath));
   assert.equal(parsed.dependencySnapshot.lockfile?.path, "../../pnpm-lock.yaml");
   assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
   assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");

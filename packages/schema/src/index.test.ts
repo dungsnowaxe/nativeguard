@@ -117,6 +117,29 @@ test("validates lockfile shape", () => {
   assert.equal(result.valid, true);
 });
 
+test("rejects acceptedExceptions without a reason", () => {
+  const result = validateLockfile({
+    schemaVersion: LOCKFILE_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: {},
+    packageManager: "npm",
+    dependencySnapshot: {},
+    summary: {},
+    recommendations: [],
+    acceptedExceptions: [
+      {
+        packageName: "expo-av",
+        version: "16.0.7",
+        reason: "   "
+      }
+    ]
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some(error => error.includes("reason")));
+});
+
 test("allows acceptedExceptions on doctor reports", () => {
   const result = validateDoctorReport({
     schemaVersion: "1.0.0",

@@ -349,6 +349,46 @@ export const bundledRules: CompatibilityRule[] = [
       }
     ],
     surfaces: ["runtime"]
+  },
+  {
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "sdk54-leave-expo-av-pending-audio-video-migration",
+    packageName: "expo-av",
+    affectedRange: "*",
+    context: {
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: ["54"]
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary: "expo-av is deprecated on SDK 54; leave the current install until migrating to expo-audio and expo-video.",
+    issue: {
+      reason:
+        "expo-av is not receiving patches and is removed in SDK 55. SDK 54 apps may leave the current install until they migrate."
+    },
+    evidence: [
+      {
+        type: "docs",
+        url: "https://docs.expo.dev/versions/v54.0.0/sdk/av",
+        summary:
+          "Expo SDK 54 docs: expo-av Video and Audio APIs are deprecated in favor of expo-video and expo-audio; expo-av is not receiving patches and will be removed in SDK 55.",
+        confidence: "high"
+      },
+      {
+        type: "docs",
+        url: "https://expo.dev/blog/upgrading-to-sdk-55",
+        summary: "SDK 55 upgrade guide: expo-av was removed; migrate to expo-audio and expo-video.",
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "leave",
+        packageName: "expo-av",
+        note: "Leave the current expo-av install on SDK 54 until the app migrates to expo-audio and expo-video. NativeGuard does not apply that migration."
+      }
+    ],
+    surfaces: [...NATIVE_SURFACES, "runtime"]
   }
 ];
 

@@ -53,6 +53,16 @@ const curatedRuleFixtures = [
     dir: "sdk54-nativewind-rngh",
     ruleId: "nativewind-min-4.2.1-with-rngh-sdk54",
     action: "bump"
+  },
+  {
+    dir: "sdk54-leave-expo-av",
+    ruleId: "sdk54-leave-expo-av-pending-audio-video-migration",
+    action: "leave"
+  },
+  {
+    dir: "sdk54-beta-screens-expo-go",
+    ruleId: "sdk54-pin-screens-tilde-4.16",
+    action: "pin"
   }
 ] as const;
 
@@ -205,10 +215,43 @@ for (const fixture of curatedRuleFixtures) {
 }
 
 test("wedge: leave/exclude acceptedExceptions round-trip without re-erroring", async () => {
-  const root = await copyFixture("sentry-expo-sdk54");
+  const root = await copyFixture("sdk54-leave-expo-av");
   const risky = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
   assert.equal(risky.summary.status, "risky");
   assert.equal(risky.findings[0]?.status, "risky");
+  assert.ok(risky.recommendations.some(recommendation => recommendation.action === "leave"));
+
+  await writeNativeGuardLockfile(risky, root);
+  const snapshot = await readNativeGuardLockfile(root);
+  assert.ok(snapshot);
+  snapshot.acceptedExceptions = [
+    {
+      packageName: "expo-av",
+      version: "16.0.7",
+      reason: "Leaving expo-av on SDK 54 until the expo-audio / expo-video migration.",
+      ruleId: "sdk54-leave-expo-av-pending-audio-video-migration"
+    }
+  ];
+  await writeFile(path.join(root, "nativeguard-lock.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
+
+  const accepted = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(accepted.summary.status, "accepted-exception");
+  assert.notEqual(accepted.summary.status, "risky");
+  assert.equal(accepted.findings[0]?.status, "accepted-exception");
+  assert.equal(accepted.findings[0]?.severity, "warning");
+  assert.equal(accepted.packageIssues[0]?.status, "accepted-exception");
+  assert.deepEqual(accepted.acceptedExceptions, snapshot.acceptedExceptions);
+
+  await writeNativeGuardLockfile(accepted, root);
+  const preserved = await readNativeGuardLockfile(root);
+  assert.equal(preserved?.acceptedExceptions.length, 1);
+  assert.equal(preserved?.acceptedExceptions[0]?.packageName, "expo-av");
+});
+
+test("wedge: exclude acceptedExceptions round-trip without re-erroring", async () => {
+  const root = await copyFixture("sentry-expo-sdk54");
+  const risky = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(risky.summary.status, "risky");
   assert.ok(risky.recommendations.some(recommendation => recommendation.action === "exclude"));
 
   await writeNativeGuardLockfile(risky, root);
@@ -226,19 +269,35 @@ test("wedge: leave/exclude acceptedExceptions round-trip without re-erroring", a
 
   const accepted = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
   assert.equal(accepted.summary.status, "accepted-exception");
-  assert.notEqual(accepted.summary.status, "risky");
   assert.equal(accepted.findings[0]?.status, "accepted-exception");
-  assert.equal(accepted.findings[0]?.severity, "warning");
-  assert.equal(accepted.packageIssues[0]?.status, "accepted-exception");
-  assert.deepEqual(accepted.acceptedExceptions, snapshot.acceptedExceptions);
-
-  await writeNativeGuardLockfile(accepted, root);
-  const preserved = await readNativeGuardLockfile(root);
-  assert.equal(preserved?.acceptedExceptions.length, 1);
-  assert.equal(preserved?.acceptedExceptions[0]?.packageName, "sentry-expo");
 });
 
-test("wedge: acceptedExceptions do not silence pin/bump findings", async () => {
+test("wedge: pin acceptedExceptions round-trip without re-erroring", async () => {
+  const root = await copyFixture("sdk54-screens-expo-go");
+  const risky = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(risky.summary.status, "risky");
+  assert.ok(risky.recommendations.some(recommendation => recommendation.action === "pin"));
+
+  await writeNativeGuardLockfile(risky, root);
+  const snapshot = await readNativeGuardLockfile(root);
+  assert.ok(snapshot);
+  snapshot.acceptedExceptions = [
+    {
+      packageName: "react-native-screens",
+      version: "4.20.0",
+      reason: "Keeping screens 4.20.0 until the Expo Go pin can be applied.",
+      ruleId: "sdk54-pin-screens-tilde-4.16"
+    }
+  ];
+  await writeFile(path.join(root, "nativeguard-lock.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
+
+  const accepted = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(accepted.summary.status, "accepted-exception");
+  assert.equal(accepted.findings[0]?.status, "accepted-exception");
+  assert.equal(accepted.findings[0]?.severity, "warning");
+});
+
+test("wedge: acceptedExceptions do not silence bump findings", async () => {
   const root = await copyFixture("sdk53-pager-view");
   const risky = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
   await writeNativeGuardLockfile(risky, root);

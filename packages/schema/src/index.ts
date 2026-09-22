@@ -232,8 +232,8 @@ export function validateDoctorReport(value: unknown): ValidationResult {
     });
   }
   if (!Array.isArray(value.nextActions)) errors.push("nextActions must be an array");
-  if (value.acceptedExceptions !== undefined && !Array.isArray(value.acceptedExceptions)) {
-    errors.push("acceptedExceptions must be an array");
+  if (value.acceptedExceptions !== undefined) {
+    validateAcceptedExceptionEntries(value.acceptedExceptions, errors, "acceptedExceptions");
   }
 
   return { valid: errors.length === 0, errors };
@@ -287,12 +287,34 @@ export function validateLockfile(value: unknown): ValidationResult {
   if (!isRecord(value.project)) errors.push("project must be an object");
   if (!isRecord(value.dependencySnapshot)) errors.push("dependencySnapshot must be an object");
   if (!isRecord(value.summary)) errors.push("summary must be an object");
-  if (!Array.isArray(value.acceptedExceptions)) errors.push("acceptedExceptions must be an array");
+  if (value.acceptedExceptions === undefined) {
+    errors.push("acceptedExceptions must be an array");
+  } else {
+    validateAcceptedExceptionEntries(value.acceptedExceptions, errors, "acceptedExceptions");
+  }
   if (value.recommendations !== undefined && !Array.isArray(value.recommendations)) {
     errors.push("recommendations must be an array");
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+function validateAcceptedExceptionEntries(value: unknown, errors: string[], label: string): void {
+  if (!Array.isArray(value)) {
+    errors.push(`${label} must be an array`);
+    return;
+  }
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      errors.push(`${label}[${index}] must be an object`);
+      return;
+    }
+    requireString(entry, "packageName", errors, `${label}[${index}].packageName`);
+    requireString(entry, "version", errors, `${label}[${index}].version`);
+    if (typeof entry.reason !== "string" || entry.reason.trim().length === 0) {
+      errors.push(`${label}[${index}].reason must be a non-empty string`);
+    }
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

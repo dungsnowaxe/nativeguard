@@ -16,6 +16,7 @@ import {
   type ProjectKind,
   type ProjectProfile,
   type Recommendation,
+  type RecommendationAction,
   type RecommendationSurface,
   type StabilityStatus,
   validateLockfile
@@ -107,10 +108,25 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   };
 }
 
+const EXPO_SDK_SOFT_CHANNEL =
+  /^(?:alpha|beta|rc|canary|preview|dev|next|snapshot)(?:[.+-][\w.-]*)?$/i;
+
+/**
+ * Parse an Expo SDK major from a declared/resolved `expo` version or `--sdk`.
+ * Accepts majors (`54`), range prefixes (`~54.0.0`), and unambiguous
+ * prerelease/soft forms (`54.0.0-beta.1`, `54beta`, `54.0.0-canary-20250729-d8899ae`).
+ * Does not prefix-match digit-prefixed garbage such as `54xyz`.
+ */
 export function parseExpoSdkMajor(version: string): string | undefined {
-  const normalized = version.trim().replace(/^[~^=v]+/, "");
-  const match = normalized.match(/^(\d+)/);
-  return match?.[1];
+  const withoutRangePrefix = version.trim().replace(/^[~^=vV]+/, "");
+  if (!withoutRangePrefix) return undefined;
+  const match = withoutRangePrefix.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$/);
+  if (!match?.[1]) return undefined;
+  const suffix = match[4] ?? "";
+  if (suffix === "") return match[1];
+  const channel = suffix.replace(/^[-.]/, "");
+  if (EXPO_SDK_SOFT_CHANNEL.test(channel)) return match[1];
+  return undefined;
 }
 
 export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: string): Promise<string> {
@@ -366,7 +382,7 @@ function evaluateRules(
 function applyAcceptedExceptions(findings: Finding[], exceptions: AcceptedException[]): Finding[] {
   if (exceptions.length === 0) return findings;
   return findings.map(finding => {
-    if (!findingHasOnlyLeaveOrExcludeRemediation(finding)) return finding;
+    if (!findingHasAcceptableExceptionRemediation(finding)) return finding;
     const installedVersion = finding.issue?.installedVersion;
     if (!installedVersion) return finding;
     const accepted = exceptions.find(exception =>
@@ -391,12 +407,24 @@ function applyAcceptedExceptions(findings: Finding[], exceptions: AcceptedExcept
   });
 }
 
-function findingHasOnlyLeaveOrExcludeRemediation(finding: Finding): boolean {
-  const actions = finding.remediation.filter(action => isRecommendationAction(action.type));
-  return (
-    actions.length > 0 &&
-    actions.every(action => action.type === "leave" || action.type === "exclude")
-  );
+function findingHasAcceptableExceptionRemediation(finding: Finding): boolean {
+  const actions = finding.remediation.map(action => action.type).filter(isRecommendationAction);
+  return actions.length > 0 && actions.every(isAcceptableExceptionAction);
+}
+
+function isAcceptableExceptionAction(action: RecommendationAction): boolean {
+  switch (action) {
+    case "pin":
+    case "leave":
+    case "exclude":
+      return true;
+    case "bump":
+      return false;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
 }
 
 function acceptedExceptionMatches(
@@ -404,6 +432,7 @@ function acceptedExceptionMatches(
   finding: Finding,
   installedVersion: string
 ): boolean {
+  if (exception.reason.trim().length === 0) return false;
   if (exception.version !== installedVersion) return false;
   if (exception.ruleId !== undefined && exception.ruleId !== finding.ruleId) return false;
   if (exception.findingId !== undefined && exception.findingId !== finding.id) return false;
@@ -530,7 +559,7 @@ function resolveExpoSdkMajor(
     const parsed = parseExpoSdkMajor(sdkFlag);
     if (!parsed) {
       throw new NativeGuardError(
-        `Invalid Expo SDK value "${sdkFlag}". Expected a major version such as 54.`,
+        `Invalid Expo SDK value "${sdkFlag}". Expected a major integer or an unambiguous prerelease/soft string such as 54, 54beta, 54.0.0-beta.1, or 54.0.0-canary.1.`,
         "INVALID_SDK"
       );
     }
@@ -817,7 +846,7 @@ function createNextActions(
       return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
     case "accepted-exception":
       return [
-        "Leave/exclude findings listed in nativeguard-lock.json acceptedExceptions are accepted, not new risk. Edit that snapshot by hand; NativeGuard does not mutate package manager lockfiles."
+        "pin/leave/exclude findings listed in nativeguard-lock.json acceptedExceptions (reason required) are accepted-exception and exit 0, not new risk. bump findings stay risky (exit 1) until the installed version changes. Edit that snapshot by hand; NativeGuard does not mutate package manager lockfiles."
       ];
     case "risky":
       return ["Review risky findings before upgrading or releasing this app."];

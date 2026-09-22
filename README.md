@@ -40,13 +40,14 @@ nativeguard doctor
 nativeguard doctor [path]
 nativeguard doctor --json
 nativeguard doctor --sdk 54
+nativeguard doctor --sdk 54.0.0-beta.1
 nativeguard doctor --write-snapshot
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `--json` | Machine-readable report. Frozen `recommendations[]`: `action` is `bump \| pin \| leave \| exclude`, plus `evidence` and `surfaces`. |
-| `--sdk <major>` | Filter rules to that Expo SDK major (`--sdk 54` or `--sdk=54`). If omitted, NativeGuard parses Expo major from the lockfile-resolved `expo` version, else the declared `expo` range. |
+| `--sdk <major\|soft>` | Filter rules to that Expo SDK major (`--sdk 54`, `--sdk=54`, `--sdk 54beta`, `--sdk 54.0.0-beta.1`). If omitted, NativeGuard parses Expo major from the lockfile-resolved `expo` version, else the declared `expo` range, including unambiguous prerelease/canary forms. Digit-prefixed garbage (`54xyz`) exits `1` with `INVALID_SDK`. |
 | `--write-snapshot` | Write `nativeguard-lock.json` (alias: `--write-lockfile`). NativeGuard snapshot only — never npm/Yarn/pnpm/Bun lockfiles. Preserves `acceptedExceptions`. |
 
 Bare React Native is detected and reported as `summary.status: "unsupported"`, not stable. Analysis is skipped.
@@ -66,26 +67,39 @@ Examples of evidence behind the default pack:
 - [sentry-expo retirement](https://github.com/expo/fyi/blob/main/sentry-expo-migration.md)
 - [FlashList v2 is New Architecture-only](https://github.com/Shopify/flash-list/issues/1752)
 - [SDK 54 screens pin](https://github.com/software-mansion/react-native-screens/issues/3470)
+- [expo-av deprecated on SDK 54](https://docs.expo.dev/versions/v54.0.0/sdk/av)
 
-## Accepted leave / exclude (`nativeguard-lock.json`)
+## Exit codes
 
-`--write-snapshot` writes a NativeGuard snapshot, not an install lockfile. To accept a **leave** or **exclude** recommendation (keep the current dependency on purpose):
+| Exit | `summary.status` | Meaning |
+| --- | --- | --- |
+| `0` | `stable` | No compatibility findings. |
+| `0` | `accepted-exception` | Matching `pin` / `leave` / `exclude` findings were recorded in `acceptedExceptions` (reason required). Warnings, not new risk. |
+| `1` | `risky` | Unaccepted findings remain, including every `bump`. |
+| `1` | `unsupported` | Project or resolver gap; not a silent stable. |
+| `1` | *(error)* | Run failed (`INVALID_SDK`, invalid snapshot, missing project, …). |
+
+`--json` error payloads include `error.code` (for example `INVALID_SDK`). NativeGuard never applies pins, bumps, or lockfile edits.
+
+## Accepted pin / leave / exclude (`nativeguard-lock.json`)
+
+`--write-snapshot` writes a NativeGuard snapshot, not an install lockfile. To accept a **pin**, **leave**, or **exclude** recommendation (keep the current dependency on purpose):
 
 1. Run `nativeguard doctor --write-snapshot`.
-2. Edit `nativeguard-lock.json` and add an `acceptedExceptions[]` entry with `packageName`, `version`, `reason`, and optional `ruleId` / `findingId`.
-3. Re-run `nativeguard doctor`. Matching leave/exclude findings become `accepted-exception` (warning, exit 0) instead of `risky`.
+2. Edit `nativeguard-lock.json` and add an `acceptedExceptions[]` entry with `packageName`, `version`, **`reason` (required)**, and optional `ruleId` / `findingId`.
+3. Re-run `nativeguard doctor`. Matching pin/leave/exclude findings become `accepted-exception` (warning, **exit 0**) instead of `risky`.
 4. `--write-snapshot` keeps those exceptions. It still does not touch package manager lockfiles.
 
-`pin` / `bump` findings stay `risky` until the installed version actually changes. Do not use `acceptedExceptions` as a substitute for a pin or bump.
+`bump` findings stay `risky` (**exit 1**) until the installed version actually changes. Do not use `acceptedExceptions` as a substitute for a bump.
 
 ```json
 {
   "acceptedExceptions": [
     {
-      "packageName": "sentry-expo",
-      "version": "7.2.0",
-      "reason": "Migrating to @sentry/react-native next sprint.",
-      "ruleId": "ban-sentry-expo-on-sdk-ge-50"
+      "packageName": "expo-av",
+      "version": "16.0.7",
+      "reason": "Leaving expo-av on SDK 54 until the expo-audio / expo-video migration.",
+      "ruleId": "sdk54-leave-expo-av-pending-audio-video-migration"
     }
   ]
 }

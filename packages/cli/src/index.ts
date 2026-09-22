@@ -110,7 +110,7 @@ function parseDoctorArgs(args: string[]): {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
         throw new NativeGuardError(
-          "The --sdk flag requires an Expo SDK major, for example --sdk 54.",
+          "The --sdk flag requires an Expo SDK major or prerelease/soft string, for example --sdk 54 or --sdk 54.0.0-beta.1.",
           "INVALID_SDK"
         );
       }
@@ -122,7 +122,7 @@ function parseDoctorArgs(args: string[]): {
       const value = arg.slice("--sdk=".length);
       if (!value) {
         throw new NativeGuardError(
-          "The --sdk flag requires an Expo SDK major, for example --sdk=54.",
+          "The --sdk flag requires an Expo SDK major or prerelease/soft string, for example --sdk=54 or --sdk=54.0.0-beta.1.",
           "INVALID_SDK"
         );
       }
@@ -134,7 +134,7 @@ function parseDoctorArgs(args: string[]): {
     }
     if (rootDir) {
       throw new NativeGuardError(
-        "doctor accepts at most one project path. Usage: nativeguard doctor [path] [--json] [--write-snapshot] [--sdk <major>]",
+        "doctor accepts at most one project path. Usage: nativeguard doctor [path] [--json] [--write-snapshot] [--sdk <major|soft>]",
         "INVALID_ARGS"
       );
     }
@@ -149,20 +149,27 @@ function printHelp(): void {
 
 Usage:
   nativeguard --version
-  nativeguard doctor [path] [--json] [--write-snapshot] [--sdk <major>]
+  nativeguard doctor [path] [--json] [--write-snapshot] [--sdk <major|soft>]
 
   --write-snapshot, --write-lockfile
       Write nativeguard-lock.json (NativeGuard snapshot only).
       Does not mutate npm, Yarn, pnpm, or Bun lockfiles.
       Preserves acceptedExceptions already recorded in the snapshot.
-  --sdk <major>
-      Filter rules to this Expo SDK major. Parsed from the project when omitted.
+  --sdk <major|soft>
+      Filter rules to this Expo SDK major. Accepts a major integer or an
+      unambiguous prerelease/soft string (54, 54beta, 54.0.0-beta.1).
+      Parsed from the project when omitted. Garbage values exit 1 with INVALID_SDK.
 
-  Accepted leave/exclude findings:
+  Exit codes:
+      0  summary.status is stable or accepted-exception
+      1  summary.status is risky or unsupported, or the run failed (INVALID_SDK, ...)
+
+  Accepted pin/leave/exclude findings:
       Add an acceptedExceptions[] entry to nativeguard-lock.json (package, version,
-      reason, optional ruleId). The next doctor run surfaces those as
-      accepted-exception instead of re-erroring. pin/bump findings still error
-      until the installed version changes.
+      reason required, optional ruleId). The next doctor run surfaces matching
+      pin, leave, or exclude findings as accepted-exception (warning, exit 0)
+      instead of re-erroring. bump findings stay risky (exit 1) until the
+      installed version changes. NativeGuard does not apply pins or bumps.
 `);
 }
 

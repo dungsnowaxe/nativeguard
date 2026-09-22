@@ -8,6 +8,7 @@ import {
   analyzeProject,
   detectPackageManager,
   detectProjectProfile,
+  NativeGuardError,
   parseExpoSdkMajor,
   readNativeGuardLockfile,
   writeNativeGuardLockfile
@@ -118,6 +119,61 @@ test("parses Expo SDK major from project versions and --sdk overrides", () => {
   assert.equal(parseExpoSdkMajor("~54.0.0"), "54");
   assert.equal(parseExpoSdkMajor("^53.2.1"), "53");
   assert.equal(parseExpoSdkMajor("v52"), "52");
+  assert.equal(parseExpoSdkMajor("54"), "54");
+  assert.equal(parseExpoSdkMajor("54.0.0-beta.1"), "54");
+  assert.equal(parseExpoSdkMajor("~54.0.0-beta.1"), "54");
+  assert.equal(parseExpoSdkMajor("54beta"), "54");
+  assert.equal(parseExpoSdkMajor("54-beta.1"), "54");
+  assert.equal(parseExpoSdkMajor("54canary"), "54");
+  assert.equal(parseExpoSdkMajor("54.0.0-canary-20250729-d8899ae"), "54");
+  assert.equal(parseExpoSdkMajor("54.0.0-preview.1"), "54");
+  assert.equal(parseExpoSdkMajor("54xyz"), undefined);
+  assert.equal(parseExpoSdkMajor("54betafoo"), undefined);
+  assert.equal(parseExpoSdkMajor("sdk54"), undefined);
+  assert.equal(parseExpoSdkMajor("canary"), undefined);
+  assert.equal(parseExpoSdkMajor("latest"), undefined);
+  assert.equal(parseExpoSdkMajor(""), undefined);
+});
+
+test("rejects garbage --sdk overrides with INVALID_SDK", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+    lockfile: "npm"
+  });
+
+  await assert.rejects(
+    () => analyzeProject({ rootDir: root, cliVersion: "0.0.0", sdk: "54xyz" }),
+    (error: unknown) => {
+      assert.equal(error instanceof NativeGuardError, true);
+      assert.equal((error as NativeGuardError).code, "INVALID_SDK");
+      return true;
+    }
+  );
+  await assert.rejects(
+    () => analyzeProject({ rootDir: root, cliVersion: "0.0.0", sdk: "canary" }),
+    (error: unknown) => {
+      assert.equal(error instanceof NativeGuardError, true);
+      assert.equal((error as NativeGuardError).code, "INVALID_SDK");
+      return true;
+    }
+  );
+});
+
+test("prerelease expo ~54.0.0-beta.1 triggers SDK 54 rules", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "sdk54-beta-screens-expo-go"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.expoSdkMajor, "54");
+  assert.equal(report.project.kind, "expo-go");
+  assert.equal(report.dependencySnapshot.dependencies.expo, "~54.0.0-beta.1");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.expo, "54.0.0-beta.1");
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"),
+    true
+  );
+  assert.equal(report.summary.status, "risky");
 });
 
 test("filters SDK-scoped rules by the current Expo major", async () => {

@@ -14,7 +14,8 @@ test("loads the curated default pack", () => {
       "ban-sentry-expo-on-sdk-ge-50",
       "flash-list-v2-requires-new-arch",
       "sdk54-pin-screens-tilde-4.16",
-      "nativewind-min-4.2.1-with-rngh-sdk54"
+      "nativewind-min-4.2.1-with-rngh-sdk54",
+      "sdk54-leave-expo-av-pending-audio-video-migration"
     ]
   );
   assert.ok(rules[0]?.remediation.some(action => action.type === "bump"));

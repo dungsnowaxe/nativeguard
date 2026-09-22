@@ -30,6 +30,16 @@ test("wedge: doctor --json on pager-view fixture emits bump", async () => {
   );
 });
 
+test("wedge: doctor --json on expo-av fixture emits leave", async () => {
+  const parsed = await doctorJson(path.join(fixturesRoot, "sdk54-leave-expo-av"));
+  assert.equal(parsed.summary.status, "risky");
+  assert.ok(
+    parsed.recommendations.some(
+      recommendation => recommendation.action === "leave" && recommendation.packageName === "expo-av"
+    )
+  );
+});
+
 test("wedge: doctor --json lock-resolved pager-view fires for npm yarn pnpm bun", async () => {
   for (const dir of [
     "lock-npm-range-miss-pager-view",
@@ -69,7 +79,79 @@ test("wedge: bare React Native doctor JSON is unsupported, not stable", async ()
   assert.notEqual(parsed.summary.status, "stable");
 });
 
-test("wedge: acceptedExceptions round-trip leave/exclude without re-erroring", async () => {
+test("wedge: acceptedExceptions round-trip leave without re-erroring", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-leave-"));
+  await cp(path.join(fixturesRoot, "sdk54-leave-expo-av"), root, { recursive: true });
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const first = await captureStdout(() => main(["doctor", "--json", "--write-snapshot"]));
+    assert.equal(first.exitCode, 1);
+    const firstReport = parseCapturedJson(first.stdout);
+    assert.equal(firstReport.summary.status, "risky");
+    assert.ok(firstReport.recommendations.some(recommendation => recommendation.action === "leave"));
+
+    const snapshotPath = path.join(root, "nativeguard-lock.json");
+    const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+      acceptedExceptions: unknown[];
+    };
+    snapshot.acceptedExceptions = [
+      {
+        packageName: "expo-av",
+        version: "16.0.7",
+        reason: "Leaving expo-av on SDK 54 until the expo-audio / expo-video migration.",
+        ruleId: "sdk54-leave-expo-av-pending-audio-video-migration"
+      }
+    ];
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+
+    const second = await captureStdout(() => main(["doctor", "--json", "--write-snapshot"]));
+    assert.equal(second.exitCode, 0);
+    const secondReport = parseCapturedJson(second.stdout);
+    assert.equal(secondReport.summary.status, "accepted-exception");
+    assert.equal(secondReport.findings[0]?.status, "accepted-exception");
+
+    const preserved = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+      acceptedExceptions: Array<{ packageName: string }>;
+    };
+    assert.equal(preserved.acceptedExceptions[0]?.packageName, "expo-av");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("wedge: acceptedExceptions round-trip pin without re-erroring", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-pin-"));
+  await cp(path.join(fixturesRoot, "sdk54-screens-expo-go"), root, { recursive: true });
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const first = await captureStdout(() => main(["doctor", "--json", "--write-snapshot"]));
+    assert.equal(first.exitCode, 1);
+    const snapshotPath = path.join(root, "nativeguard-lock.json");
+    const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+      acceptedExceptions: unknown[];
+    };
+    snapshot.acceptedExceptions = [
+      {
+        packageName: "react-native-screens",
+        version: "4.20.0",
+        reason: "Keeping screens 4.20.0 until the Expo Go pin can be applied.",
+        ruleId: "sdk54-pin-screens-tilde-4.16"
+      }
+    ];
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+
+    const second = await captureStdout(() => main(["doctor", "--json"]));
+    assert.equal(second.exitCode, 0);
+    const secondReport = parseCapturedJson(second.stdout);
+    assert.equal(secondReport.summary.status, "accepted-exception");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("wedge: acceptedExceptions round-trip exclude without re-erroring", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-accepted-"));
   await cp(path.join(fixturesRoot, "sentry-expo-sdk54"), root, { recursive: true });
   const previous = process.cwd();
@@ -104,6 +186,38 @@ test("wedge: acceptedExceptions round-trip leave/exclude without re-erroring", a
       acceptedExceptions: Array<{ packageName: string }>;
     };
     assert.equal(preserved.acceptedExceptions[0]?.packageName, "sentry-expo");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("wedge: acceptedExceptions do not silence bump findings", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-bump-"));
+  await cp(path.join(fixturesRoot, "sdk53-pager-view"), root, { recursive: true });
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const first = await captureStdout(() => main(["doctor", "--json", "--write-snapshot"]));
+    assert.equal(first.exitCode, 1);
+    const snapshotPath = path.join(root, "nativeguard-lock.json");
+    const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+      acceptedExceptions: unknown[];
+    };
+    snapshot.acceptedExceptions = [
+      {
+        packageName: "react-native-pager-view",
+        version: "6.6.0",
+        reason: "Trying to accept a bump finding should not hide it.",
+        ruleId: "pager-view-min-6.7.1-on-rn-079"
+      }
+    ];
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+
+    const second = await captureStdout(() => main(["doctor", "--json"]));
+    assert.equal(second.exitCode, 1);
+    const secondReport = parseCapturedJson(second.stdout);
+    assert.equal(secondReport.summary.status, "risky");
+    assert.equal(secondReport.findings[0]?.status, "risky");
   } finally {
     process.chdir(previous);
   }

@@ -21,6 +21,7 @@ const LOCKFILE_CANDIDATES = [
 
 export interface PackageJson {
   name?: string;
+  packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -29,6 +30,11 @@ export interface PackageJson {
   overrides?: Record<string, string | Record<string, string>>;
   pnpm?: {
     overrides?: Record<string, string>;
+    packageExtensions?: Record<string, unknown>;
+    patchedDependencies?: Record<string, string>;
+  };
+  expo?: {
+    newArchEnabled?: boolean;
   };
 }
 

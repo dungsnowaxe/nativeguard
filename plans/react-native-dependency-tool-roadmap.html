@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Expo / React Native Dependency Intelligence Tool — Product Plan & Roadmap</title>
+  <title>Expo / React Native Dependency Intelligence Tool — Product Plan &amp; Roadmap</title>
   <style>
     :root {
       --bg: #0b1020;
@@ -370,6 +370,125 @@
     </section>
 
     <section class="card">
+      <h2>Expansion backlog for the open-source version</h2>
+      <p>
+        Treat this section as the working queue for turning the roadmap into an open-source project plan. Each item should be expanded, then reviewed again for newly discovered pain points before moving to the next item.
+      </p>
+      <p>
+        Detailed build specification now lives in <a href="./nativeguard-oss-v1-spec.md"><code>plans/nativeguard-oss-v1-spec.md</code></a>.
+      </p>
+      <ol>
+        <li><strong>Sharpen the project purpose:</strong> define the promise, the user, and the exact dependency decisions NativeGuard should help with.</li>
+        <li><strong>Map common pain points:</strong> document real Expo/RN failure modes beyond simple version mismatch warnings.</li>
+        <li><strong>Define open-source readiness:</strong> clarify repository structure, rule contribution workflow, governance, and trust model.</li>
+        <li><strong>Design the rule registry:</strong> make compatibility knowledge reviewable, evidence-backed, versioned, and safe for CI.</li>
+        <li><strong>Improve adoption paths:</strong> make the CLI useful locally, in GitHub Actions, and inside Renovate/Dependabot workflows.</li>
+        <li><strong>Review for missing pains:</strong> after each expansion pass, add newly discovered pains to the backlog instead of losing them in prose.</li>
+      </ol>
+      <div class="callout">
+        <strong>Newly discovered pain backlog:</strong>
+        <ul>
+          <li>Native build failures after successful JavaScript installs.</li>
+          <li>Stale patch-package files, overrides, resolutions, and package extensions with no owner or expiry.</li>
+          <li>False positives, unknown packages, stale metadata, or too-coarse compatibility labels from directory data.</li>
+          <li>Monorepo hoisting surprises, duplicate React/RN installs, workspace-local packages, and private native modules.</li>
+          <li>Package manager-specific fixes that work in npm but not pnpm, Yarn, Bun, or CI.</li>
+          <li>Expo SDK upgrade blockers discovered late, especially native modules pinned to older RN APIs.</li>
+          <li>New Architecture ambiguity across Fabric, TurboModules, bridgeless mode, codegen, and platform-specific support.</li>
+          <li>CI noise from warnings that require human judgment instead of binary pass/fail logic.</li>
+          <li>Dependency decisions trapped in old PRs, Slack threads, upgrade notes, or one maintainer's memory.</li>
+          <li>Bug reports without enough environment data to reproduce the compatibility problem.</li>
+          <li>Behavior differences between Expo Go, development builds, EAS Build, and bare native builds.</li>
+          <li>Conflicting community reports for the same package/version/context.</li>
+          <li>Stale or malicious compatibility rules creating supply-chain risk.</li>
+          <li>Transitive dependency changes that bypass direct package review but still change native behavior.</li>
+          <li>Expo config plugins, autolinking, prebuild output, Podfile/Gradle edits, and native folders drifting from app config.</li>
+          <li>EAS build profiles, environment variables, Node versions, CocoaPods, Kotlin, Gradle, Xcode, and Android SDK versions changing the result.</li>
+          <li>Local caches hiding a dependency problem that only appears on a clean CI machine.</li>
+          <li>Public bug reports needing enough diagnostic detail without leaking secrets, private package names, or internal repository structure.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-7">
+        <h2>Project purpose</h2>
+        <p>
+          NativeGuard exists to help Expo and React Native teams make dependency decisions with evidence instead of guesswork. The product should answer whether a dependency graph is <span class="strong">known stable</span>, <span class="strong">intentionally off-matrix</span>, <span class="strong">temporarily patched</span>, or <span class="strong">unsafe to ship</span>.
+        </p>
+        <p>
+          The open-source CLI should become the shared compatibility layer between local developers, CI, Renovate/Dependabot, and AI coding agents. Its job is not to replace official tools; its job is to preserve the reasoning that happens after official tools say “this version is unexpected” or “this package is unknown”.
+        </p>
+        <div class="callout">
+          <strong>OSS mission:</strong> make React Native dependency risk visible, explainable, reviewable, and reproducible before a team discovers the problem in Xcode, Gradle, EAS Build, or production crash reports.
+        </div>
+      </div>
+      <div class="card span-5">
+        <h2>Open-source positioning</h2>
+        <ul>
+          <li><strong>Primary users:</strong> RN app maintainers, Expo teams, platform engineers, library maintainers, and CI owners.</li>
+          <li><strong>Primary moment:</strong> before merging a dependency PR, upgrading Expo SDK/RN, enabling New Architecture, or deleting a patch.</li>
+          <li><strong>Core asset:</strong> a curated, evidence-backed compatibility rule registry.</li>
+          <li><strong>Trust model:</strong> deterministic analysis first, human-reviewed rules second, AI-assisted research only as a proposal path.</li>
+          <li><strong>Anti-goal:</strong> do not become a general npm updater, security scanner, or dashboard-first SaaS.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-12">
+        <h2>High-value user pain points</h2>
+        <p>
+          The best open-source wedge is not broad dependency freshness. It is the set of moments where a React Native app looks healthy at the JavaScript package level, but the native runtime, build system, Expo SDK matrix, or team workflow is about to fail.
+        </p>
+      </div>
+      <div class="card span-6">
+        <h3>App maintainer pains</h3>
+        <ul>
+          <li><strong>“Expo recommends A, but B fixes my bug.”</strong> Teams need to know whether an off-matrix version is a safe exception or a future crash.</li>
+          <li><strong>Warnings without decision support.</strong> A warning from Expo Doctor or React Native Directory still leaves the maintainer deciding whether to downgrade, exclude, replace, patch, or ignore.</li>
+          <li><strong>Native failure after clean install.</strong> The dependency tree can install while CocoaPods, Gradle, codegen, Hermes, Fabric, or EAS Build fails later.</li>
+          <li><strong>Patch amnesia.</strong> A patch-package file may be essential, obsolete, or harmful after a version bump, but the repo rarely records why it exists.</li>
+          <li><strong>Upgrade blockers are discovered too late.</strong> Teams often learn that one native module blocks Expo SDK/RN migration only after hours of build failures.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Platform / CI owner pains</h3>
+        <ul>
+          <li><strong>Dependency PRs lack RN context.</strong> Renovate and Dependabot can open the PR, but they do not know whether the new graph is stable for this Expo SDK, RN version, architecture mode, or package manager.</li>
+          <li><strong>CI checks become noisy.</strong> Teams either block on too many warnings or turn checks off because the output does not distinguish known exceptions from new risk.</li>
+          <li><strong>Monorepo resolution is invisible.</strong> Workspaces, hoisting, duplicate React/RN installs, and package manager-specific overrides can change runtime behavior without obvious package.json changes.</li>
+          <li><strong>Policy is hard to encode.</strong> A team may allow off-matrix versions only with evidence, expiry, and owner approval, but existing tools do not model that workflow.</li>
+          <li><strong>Cross-repo learning is lost.</strong> A workaround found in one app does not automatically protect another app in the same organization.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Library maintainer pains</h3>
+        <ul>
+          <li>Users report “does not work on Expo SDK X” without enough environment data.</li>
+          <li>Compatibility status differs across iOS, Android, web, New Architecture, and Expo Go/dev builds.</li>
+          <li>Release notes rarely become machine-readable compatibility ranges.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>New Architecture pains</h3>
+        <ul>
+          <li>Directory metadata may be missing, stale, or too coarse for a specific package version.</li>
+          <li>Fabric support, TurboModule support, bridgeless behavior, and codegen issues are often conflated.</li>
+          <li>A package can be compatible in bare RN but still awkward in Expo prebuild or EAS Build.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Agent workflow pains</h3>
+        <ul>
+          <li>AI agents can edit dependency files confidently while lacking Expo/RN compatibility facts.</li>
+          <li>Agents need structured facts, allowed actions, and verification gates instead of unbounded web guesses.</li>
+          <li>Generated fixes must be explainable enough for humans to review in PRs.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Name candidates</h2>
       <p>
         Better than <code>rn-align</code>, because the product is not only alignment. It is more about compatibility, stability, and remediation.
@@ -445,6 +564,63 @@ nativeguard apply --safe</code></pre>
       </div>
     </section>
 
+    <section class="grid">
+      <div class="card span-12">
+        <h2>Adoption paths</h2>
+        <p>
+          The CLI should become useful in small steps. A maintainer should be able to adopt read-only reports first, then CI checks, then PR review, then safe remediation and private rules.
+        </p>
+      </div>
+      <div class="card span-4">
+        <h3>Local developer</h3>
+        <ul>
+          <li>Run <code>nativeguard doctor</code> before upgrading Expo SDK or React Native.</li>
+          <li>Run <code>nativeguard explain package@version</code> before accepting an off-matrix dependency.</li>
+          <li>Generate a redacted environment snapshot for bug reports and library maintainers.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>CI gate</h3>
+        <ul>
+          <li>Fail only on new red risks by default.</li>
+          <li>Warn on stale exceptions, unknown packages, and low-confidence rules.</li>
+          <li>Upload stable-state snapshots as artifacts for later PR comparison.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Renovate / Dependabot</h3>
+        <ul>
+          <li>Review the dependency graph diff instead of only the package that changed.</li>
+          <li>Comment with risk, evidence, required actions, and verification commands.</li>
+          <li>Suggest packageRules, labels, or approval requirements for risky native packages.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Library maintainer</h3>
+        <ul>
+          <li>Ask users to attach <code>nativeguard doctor --report</code> to compatibility issues.</li>
+          <li>Publish machine-readable support ranges or rule snippets with releases.</li>
+          <li>Use fixtures to confirm Expo/RN/New Architecture support claims.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>AI coding agent</h3>
+        <ul>
+          <li>Call NativeGuard for facts before editing dependency files.</li>
+          <li>Use JSON output to choose allowed actions and required verification.</li>
+          <li>Open rule proposals when no trusted rule exists.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Team product later</h3>
+        <ul>
+          <li>Track private exceptions across repositories.</li>
+          <li>Show patch expiry and upgrade blockers before release planning.</li>
+          <li>Let platform teams approve rules and policies centrally.</li>
+        </ul>
+      </div>
+    </section>
+
     <section class="card">
       <h2>How can a CLI get GitHub Issues workarounds or patches?</h2>
       <p>
@@ -512,6 +688,195 @@ nativeguard apply --safe</code></pre>
       </div>
     </section>
 
+    <section class="grid">
+      <div class="card span-12">
+        <h2>Rule registry design</h2>
+        <p>
+          The registry is the moat, but only if it stays precise. Rules should be small, scoped, evidence-backed records that explain a compatibility decision in a specific project context.
+        </p>
+      </div>
+      <div class="card span-6">
+        <h3>Rule lifecycle</h3>
+        <ol>
+          <li><strong>Proposed:</strong> created from a maintainer, user report, release note, issue, or AI-assisted research.</li>
+          <li><strong>Reproduced:</strong> tied to a fixture, minimal reproduction, or enough environment evidence.</li>
+          <li><strong>Trusted:</strong> reviewed by maintainers and safe to use in default rule packs.</li>
+          <li><strong>Stale:</strong> past review date, superseded by a package release, or lacking current Expo/RN coverage.</li>
+          <li><strong>Retired:</strong> no longer relevant and kept only for historical explanation.</li>
+        </ol>
+      </div>
+      <div class="card span-6">
+        <h3>Rule fields that matter</h3>
+        <ul>
+          <li><strong>Scope:</strong> package, version range, transitive/direct status, Expo SDK, RN version, platform, architecture mode, package manager.</li>
+          <li><strong>Symptom:</strong> install warning, pod failure, Gradle failure, codegen error, runtime crash, rendering regression, or CI-only failure.</li>
+          <li><strong>Action:</strong> pin, bump, downgrade, exclude, override, resolution, package extension, config change, patch, replacement, or manual verification.</li>
+          <li><strong>Evidence:</strong> issue, PR, release note, changelog, reproduction repo, fixture result, or maintainer confirmation.</li>
+          <li><strong>Governance:</strong> confidence, owner, review date, expiry date, and human approval requirement.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Conflict handling</h3>
+        <ul>
+          <li>If two rules disagree, prefer the rule with narrower context and stronger evidence.</li>
+          <li>If confidence is low, report uncertainty instead of giving a hard recommendation.</li>
+          <li>If the rule only covers one platform, never imply cross-platform safety.</li>
+          <li>If a package has no metadata, classify why: JS-only, native unknown, private/internal, abandoned, or missing directory entry.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Registry verification</h3>
+        <ul>
+          <li>Schema validation for every rule.</li>
+          <li>Snapshot tests for report output.</li>
+          <li>Fixture projects for common Expo/RN/package-manager combinations.</li>
+          <li>Optional clean-machine build checks for high-impact rules.</li>
+          <li>Scheduled stale-rule reports so maintainers review old workaround advice.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-12">
+        <h2>Open-source readiness checklist</h2>
+        <p>
+          Before public launch, NativeGuard needs more than a useful CLI. It needs a contribution system that lets the community add compatibility knowledge without turning the project into an unreviewed pile of package anecdotes.
+        </p>
+      </div>
+      <div class="card span-6">
+        <h3>Repository shape</h3>
+        <ul>
+          <li><strong><code>@nativeguard/core</code>:</strong> project scanner, dependency graph model, context detector, rule evaluator, and report schema.</li>
+          <li><strong><code>@nativeguard/cli</code>:</strong> terminal commands, JSON output, CI-friendly exit codes, and local config loading.</li>
+          <li><strong><code>@nativeguard/rules</code>:</strong> public compatibility rules, fixtures, schema validation, and evidence metadata.</li>
+          <li><strong><code>@nativeguard/action</code>:</strong> GitHub Action wrapper for PR comments, check annotations, and stable-state diffing.</li>
+          <li><strong><code>fixtures/</code>:</strong> real-world Expo/RN project shapes across npm, pnpm, Yarn, monorepos, New Architecture, and bare RN.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Contributor workflow</h3>
+        <ul>
+          <li>Every rule PR must include affected package, version range, Expo SDK/RN context, platform, architecture mode, symptom, action, confidence, and evidence link.</li>
+          <li>Every rule must pass schema validation and at least one fixture test or documented reproduction reason.</li>
+          <li>Rules should include <code>reviewAfter</code> or <code>expiresAfter</code> so stale workarounds are visible.</li>
+          <li>Maintainers should label rules as <code>confirmed</code>, <code>community-reported</code>, <code>workaround</code>, <code>deprecated</code>, or <code>needs-repro</code>.</li>
+          <li>Generated or AI-assisted rules must be submitted as proposals, never merged as trusted facts without human review.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Trust and safety rules</h3>
+        <ul>
+          <li>No blind source patch application by default.</li>
+          <li>No scraping GitHub Issues during normal installs or CI runs.</li>
+          <li>No rule should recommend an action without confidence, evidence, affected range, and rollback guidance.</li>
+          <li>Risky actions require explicit flags, clean git state checks, and a generated diff preview.</li>
+          <li>CI mode should distinguish <code>new risk</code>, <code>known exception</code>, <code>stale exception</code>, and <code>unknown</code>.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Public launch minimum</h3>
+        <ul>
+          <li>Readable README with the exact problem statement and five realistic examples.</li>
+          <li>Stable JSON report schema for agent, CI, and dashboard use.</li>
+          <li>Exit code contract for local and CI workflows.</li>
+          <li>Rule schema docs plus contribution templates.</li>
+          <li>Security policy, code of conduct, license, changelog, and maintainer escalation path.</li>
+          <li>Comparison page explaining how NativeGuard complements Expo Doctor, React Native Directory, rnx-kit, Renovate, Dependabot, Snyk, and Socket.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-12">
+        <h2>Open-source v1 completeness bar</h2>
+        <p>
+          The public open-source release should not be treated as a thin MVP. Internal milestones can be incremental, but the first public v1 should feel complete, documented, predictable, and safe enough for maintainers to recommend in real Expo/RN repositories.
+        </p>
+        <div class="callout">
+          <strong>Public v1 rule:</strong> do not launch publicly until the CLI can explain its findings, emit stable machine-readable output, validate rules, run in CI, and give contributors a clear path to improve the knowledge base without maintainer guesswork.
+        </div>
+      </div>
+      <div class="card span-4">
+        <h3>User-facing completeness</h3>
+        <ul>
+          <li><code>doctor</code>, <code>explain</code>, <code>plan</code>, <code>snapshot</code>, <code>compare</code>, and <code>rules validate</code> commands exist.</li>
+          <li>Every warning includes why it matters, affected context, confidence, evidence, and next action.</li>
+          <li>Reports are readable in terminal and stable as JSON.</li>
+          <li>Unknowns are explicit: the tool should say when it lacks evidence instead of pretending certainty.</li>
+          <li>Config file supports exceptions, rule pack pinning, ignored packages, private package classification, and CI policy.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Contributor completeness</h3>
+        <ul>
+          <li>Rule schema docs are complete enough for a first-time contributor.</li>
+          <li>Rule PR template asks for reproduction context, affected ranges, and evidence.</li>
+          <li>Fixture authoring guide explains how to add a package-manager/project-shape regression case.</li>
+          <li>Maintainer guide defines review labels, confidence levels, stale-rule process, and release duties.</li>
+          <li>Examples show good, bad, stale, conflicting, and low-confidence rules.</li>
+        </ul>
+      </div>
+      <div class="card span-4">
+        <h3>Maintainer completeness</h3>
+        <ul>
+          <li>Versioned rule packs can be released independently from CLI code.</li>
+          <li>Snapshot tests protect report wording and JSON shape.</li>
+          <li>Compatibility fixtures cover Expo managed, Expo prebuild, bare RN, monorepo, and New Architecture cases.</li>
+          <li>Release checklist covers npm provenance, changelog, migration notes, and rule pack compatibility.</li>
+          <li>Security policy explains how to report malicious rules, unsafe fixes, and private data leaks.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-12">
+        <h2>Detailed implementation surfaces</h2>
+        <p>
+          These surfaces are the practical scope needed before NativeGuard can be credible as open source. Each surface should have docs, tests, and examples before public release.
+        </p>
+      </div>
+      <div class="card span-6">
+        <h3>Project scanner</h3>
+        <ul>
+          <li>Detect Expo SDK, React Native version, Expo Router, Expo Modules, bare RN, generated native folders, and managed/prebuild posture.</li>
+          <li>Detect package manager and lockfile state for npm, pnpm, Yarn classic/Berry, and Bun read-only mode.</li>
+          <li>Detect workspace roots, app packages, duplicated React/RN installs, private packages, local packages, and patches.</li>
+          <li>Detect New Architecture signals from app config, Gradle, Podfile, RN config, and generated native files when present.</li>
+          <li>Produce a redacted environment snapshot suitable for GitHub issues.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Dependency graph engine</h3>
+        <ul>
+          <li>Model direct and transitive dependencies separately.</li>
+          <li>Resolve package versions from lockfiles when available, not only from declared ranges.</li>
+          <li>Classify packages as JS-only, Expo module, native module, config plugin, autolinked native package, unknown, private, abandoned, or deprecated.</li>
+          <li>Track peer dependency mismatches, duplicate native modules, package manager overrides, and patched packages.</li>
+          <li>Expose graph diffing between base/head for dependency PR review.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Policy and exception engine</h3>
+        <ul>
+          <li>Support local exceptions with owner, reason, expiry, allowed version range, and required verification.</li>
+          <li>Support CI policies for fail/warn/ignore by severity, confidence, package group, and whether risk is new.</li>
+          <li>Support pinned rule pack versions for reproducible CI.</li>
+          <li>Support organization/private rule overlays later without changing public rule semantics.</li>
+          <li>Warn when an exception survives past its review date or no longer matches the installed version.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Report and integration contracts</h3>
+        <ul>
+          <li>Terminal report optimized for maintainers making merge decisions.</li>
+          <li>JSON schema optimized for CI, GitHub Actions, dashboards, and AI agents.</li>
+          <li>GitHub PR comment format with summary, risk table, evidence, required actions, and verification checklist.</li>
+          <li>SARIF or check annotations later for code scanning-style presentation.</li>
+          <li>Stable exit codes for clean, warning-only, blocked, invalid config, stale rules, and internal error states.</li>
+        </ul>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Architecture</h2>
       <div class="architecture">
@@ -543,42 +908,94 @@ nativeguard apply --safe</code></pre>
     </section>
 
     <section class="grid">
+      <div class="card span-12">
+        <h2>Testing and release discipline</h2>
+        <p>
+          NativeGuard will only earn trust if every recommendation can be traced, tested, and released predictably. The test suite should protect both code behavior and compatibility knowledge.
+        </p>
+      </div>
       <div class="card span-6">
-        <h2>What to build first</h2>
+        <h3>Fixture matrix</h3>
         <ul>
-          <li><strong>Own doctor implementation:</strong> not a wrapper, but compatible mental model.</li>
-          <li><strong>Expo SDK matrix loader:</strong> know expected package versions.</li>
-          <li><strong>RN profile model:</strong> support Expo and bare RN projects.</li>
-          <li><strong>Package manager adapters:</strong> npm, pnpm, Yarn, Bun detection and safe remediation primitives.</li>
-          <li><strong>Stable-state snapshot:</strong> store current dependency graph status in CI artifact or repo file.</li>
-          <li><strong>PR review:</strong> detect whether a Renovate/Dependabot PR introduces instability.</li>
+          <li><strong>Expo managed:</strong> clean app, unknown package, off-matrix dependency, and Expo SDK upgrade case.</li>
+          <li><strong>Expo prebuild:</strong> generated native folders, config plugin changes, Podfile/Gradle drift, and EAS profile variance.</li>
+          <li><strong>Bare React Native:</strong> RN minor alignment, New Architecture flags, native module duplicate, and peer dependency mismatch.</li>
+          <li><strong>Monorepo:</strong> workspace app, local package, hoisted dependency, duplicated React/RN, and private package classification.</li>
+          <li><strong>Package managers:</strong> npm lockfile, pnpm lockfile and overrides, Yarn resolutions/packageExtensions, Bun read-only detection.</li>
         </ul>
       </div>
       <div class="card span-6">
-        <h2>What not to build first</h2>
+        <h3>Verification layers</h3>
+        <ul>
+          <li>Unit tests for scanners, rule matching, semver/range handling, and policy decisions.</li>
+          <li>Golden snapshot tests for terminal output and JSON reports.</li>
+          <li>Fixture integration tests that run the CLI against realistic repo trees.</li>
+          <li>Rule registry CI that validates schema, evidence shape, stale dates, and conflicting scopes.</li>
+          <li>Optional expensive checks for selected fixtures: TypeScript, Expo Doctor parity checks, pod install, Gradle sync/build, or EAS dry-run equivalent where feasible.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Security and privacy</h3>
+        <ul>
+          <li>Redaction rules for environment reports: tokens, registry URLs, private scopes, internal paths, and CI variables.</li>
+          <li>No default network access in normal analysis unless the user opts into remote rule updates.</li>
+          <li>Remote rules must be versioned, cacheable, and pin-able; CI should be reproducible offline after cache warmup.</li>
+          <li>Patch and apply commands must require clean git state, preview diffs, and explicit confirmation.</li>
+          <li>Security policy must cover malicious rules, unsafe remediation, dependency confusion, and accidental private data disclosure.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h3>Release process</h3>
+        <ul>
+          <li>Separate release channels for CLI/core and rules.</li>
+          <li>Changelog entries distinguish engine changes, rule additions, rule removals, stale-rule changes, and breaking report schema changes.</li>
+          <li>Rule pack releases include generated summaries of new affected packages and retired workarounds.</li>
+          <li>Public v1 requires docs, examples, fixtures, contribution templates, CI, and at least one real-project validation report.</li>
+          <li>Breaking changes require migration notes for config, JSON schema, rule schema, and CI exit codes.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card span-6">
+        <h2>Build order before public v1</h2>
+        <ul>
+          <li><strong>Own doctor implementation:</strong> not a wrapper, but compatible mental model with explainable findings.</li>
+          <li><strong>Schema-first foundation:</strong> define config, rule, report, snapshot, and exit-code contracts before broad feature work.</li>
+          <li><strong>Expo/RN context model:</strong> support Expo managed, Expo prebuild, bare RN, New Architecture, and generated native folders.</li>
+          <li><strong>Package manager adapters:</strong> npm, pnpm, Yarn, and Bun read-only detection with package-manager-specific advice.</li>
+          <li><strong>Stable-state snapshot:</strong> store current dependency graph status in CI artifact or repo file.</li>
+          <li><strong>PR review:</strong> detect whether a Renovate/Dependabot PR introduces instability across direct and transitive dependencies.</li>
+          <li><strong>Contributor-ready rules:</strong> ship rule validation, examples, fixtures, and review workflow before asking the community to contribute.</li>
+        </ul>
+      </div>
+      <div class="card span-6">
+        <h2>What not to publicize early</h2>
         <ul>
           <li><strong>No dashboard-first product.</strong> Too far from the repo-level pain.</li>
           <li><strong>No broad dependency SaaS.</strong> Renovate, Dependabot, Socket, Snyk, Mend, etc. already own broad update/security workflows.</li>
           <li><strong>No auto-generated patches without verification.</strong> Trust will die fast if it breaks builds.</li>
           <li><strong>No huge local scraped database.</strong> Start curated and small.</li>
           <li><strong>No “AI-only skill”.</strong> Skill should guide agents to call deterministic tooling.</li>
+          <li><strong>No public release with vague warnings.</strong> If the tool cannot explain a risk, it should report uncertainty instead of pretending to know.</li>
         </ul>
       </div>
     </section>
 
     <section class="card">
-      <h2>Roadmap</h2>
+      <h2>Roadmap to OSS-ready v1</h2>
       <div class="phase">
         <div class="phase-label">0–2 weeks</div>
         <div>
-          <h3>Prototype: dependency graph + report</h3>
-          <p>Build a CLI that scans an Expo/RN repo and prints a useful compatibility report. No fixing yet.</p>
+          <h3>Internal milestone: dependency graph + report schema</h3>
+          <p>Build the scanner, graph model, config format, rule schema, report JSON schema, and terminal report contract. This is not public v1 yet.</p>
           <div class="pill-row">
             <span class="pill">package.json parser</span>
             <span class="pill">lockfile detection</span>
             <span class="pill">Expo SDK detection</span>
             <span class="pill">RN version detection</span>
             <span class="pill">native module list</span>
+            <span class="pill">JSON schema</span>
           </div>
         </div>
       </div>
@@ -586,14 +1003,15 @@ nativeguard apply --safe</code></pre>
       <div class="phase">
         <div class="phase-label">2–6 weeks</div>
         <div>
-          <h3>MVP: NativeGuard Doctor</h3>
-          <p>Implement Expo Doctor-like checks and rnx-kit-like alignment, but with clearer output, intentional exceptions, and package manager-aware advice.</p>
+          <h3>Internal milestone: NativeGuard Doctor complete enough for fixtures</h3>
+          <p>Implement Expo Doctor-like checks and rnx-kit-like alignment with clearer output, intentional exceptions, package manager-aware advice, and fixture-backed regression tests.</p>
           <div class="pill-row">
             <span class="pill">stable / exception / risky states</span>
             <span class="pill">Expo install exclude suggestions</span>
             <span class="pill">peer dependency checks</span>
             <span class="pill">New Architecture warnings</span>
             <span class="pill">monorepo support</span>
+            <span class="pill">fixture suite</span>
           </div>
         </div>
       </div>
@@ -601,14 +1019,15 @@ nativeguard apply --safe</code></pre>
       <div class="phase">
         <div class="phase-label">6–10 weeks</div>
         <div>
-          <h3>MVP+: PR review for Renovate/Dependabot</h3>
-          <p>Ship a GitHub Action that runs on dependency PRs and comments whether the update breaks the previous stable state.</p>
+          <h3>Internal milestone: PR review for Renovate/Dependabot</h3>
+          <p>Build the GitHub Action, graph diffing, stable-state snapshots, CI exit codes, and PR comments. Keep the release private or alpha until output is stable.</p>
           <div class="pill-row">
             <span class="pill">graph diff</span>
             <span class="pill">risk comment</span>
             <span class="pill">required checks</span>
             <span class="pill">Renovate labels</span>
             <span class="pill">Dependabot support</span>
+            <span class="pill">exit-code contract</span>
           </div>
         </div>
       </div>
@@ -616,14 +1035,15 @@ nativeguard apply --safe</code></pre>
       <div class="phase">
         <div class="phase-label">10–16 weeks</div>
         <div>
-          <h3>Rules registry v1</h3>
-          <p>Create a curated rule pack for the top 30–50 painful packages in Expo/RN apps. Focus on real-world breakages, not full npm coverage.</p>
+          <h3>Rules registry ready for community review</h3>
+          <p>Create a curated rule pack for the top 30–50 painful packages in Expo/RN apps, plus validation, examples, stale-rule process, and contribution docs. Focus on real-world breakages, not full npm coverage.</p>
           <div class="pill-row">
             <span class="pill">known issues</span>
             <span class="pill">safe version ranges</span>
             <span class="pill">patch recipes</span>
             <span class="pill">workaround recipes</span>
             <span class="pill">evidence links</span>
+            <span class="pill">rule governance</span>
           </div>
         </div>
       </div>
@@ -631,14 +1051,16 @@ nativeguard apply --safe</code></pre>
       <div class="phase">
         <div class="phase-label">4–6 months</div>
         <div>
-          <h3>Safe apply mode</h3>
-          <p>Allow deterministic fixes with confirmation. Start with manifest/config changes before source patches.</p>
+          <h3>OSS v1 release candidate</h3>
+          <p>Package the CLI, core engine, public rules, GitHub Action, docs, fixtures, examples, security policy, and release process. Safe apply remains opt-in and conservative.</p>
           <div class="pill-row">
             <span class="pill">overrides</span>
             <span class="pill">resolutions</span>
             <span class="pill">packageExtensions</span>
             <span class="pill">expo.install.exclude</span>
             <span class="pill">patch-package / pnpm / Yarn patch</span>
+            <span class="pill">docs complete</span>
+            <span class="pill">public launch checklist</span>
           </div>
         </div>
       </div>
@@ -646,8 +1068,8 @@ nativeguard apply --safe</code></pre>
       <div class="phase">
         <div class="phase-label">6–9 months</div>
         <div>
-          <h3>AI + MCP integration</h3>
-          <p>Expose commands to coding agents. The agent should call the CLI for dependency truth, then edit code only when the CLI returns a clear plan.</p>
+          <h3>Post-v1: AI + MCP integration</h3>
+          <p>Expose commands to coding agents after deterministic CLI contracts are stable. The agent should call the CLI for dependency truth, then edit code only when the CLI returns a clear plan.</p>
           <div class="pill-row">
             <span class="pill">MCP server</span>
             <span class="pill">Codex/Claude/Cursor skills</span>
@@ -660,7 +1082,7 @@ nativeguard apply --safe</code></pre>
       <div class="phase">
         <div class="phase-label">9–12 months</div>
         <div>
-          <h3>Team product</h3>
+          <h3>Post-v1: Team product</h3>
           <p>Add hosted registry, dashboard, team policies, patch expiry reports, and exception approval workflows.</p>
           <div class="pill-row">
             <span class="pill">dashboard</span>
@@ -675,14 +1097,15 @@ nativeguard apply --safe</code></pre>
 
     <section class="grid">
       <div class="card span-6">
-        <h2>MVP scope</h2>
-        <p>Keep it narrow enough to finish and useful enough to validate.</p>
+        <h2>Public OSS v1 scope</h2>
+        <p>Keep the first public release focused, but complete enough that maintainers can trust it in real repositories.</p>
         <ul>
           <li>Expo SDK 53–57 and matching RN versions.</li>
-          <li>npm, pnpm, Yarn. Bun read-only at first.</li>
+          <li>npm, pnpm, Yarn. Bun read-only at first with explicit limitations.</li>
           <li>Top libraries: Reanimated, Gesture Handler, Screens, Safe Area Context, SVG, Skia, MMKV, Maps, Firebase, Expo modules, bottom sheets, navigation packages.</li>
-          <li>CLI report + GitHub Action review.</li>
+          <li>CLI report, JSON report, stable-state snapshot, graph diff, and GitHub Action review.</li>
           <li>Curated rules only; no autonomous GitHub scraping by default.</li>
+          <li>Docs, examples, contribution templates, fixture tests, security policy, and release checklist included before launch.</li>
         </ul>
       </div>
       <div class="card span-6">
@@ -691,7 +1114,9 @@ nativeguard apply --safe</code></pre>
           <li>Test on 10–20 real Expo/RN repos, including your own app.</li>
           <li>Collect before/after upgrade failure examples.</li>
           <li>Ask RN teams for their existing patch-package folders and upgrade notes.</li>
-          <li>Launch as free OSS CLI, charge later for hosted rule updates / team dashboard.</li>
+          <li>Run private alpha validation before public open-source launch.</li>
+          <li>Require at least five clear wins where NativeGuard catches or explains a dependency risk that generic update tools do not.</li>
+          <li>Launch as free OSS CLI only when docs, fixtures, rule governance, and CI integration are complete.</li>
           <li>Make the PR review comment so useful that teams keep it in CI.</li>
         </ul>
       </div>
@@ -817,7 +1242,7 @@ Human review: required</code></pre>
         </div>
       </div>
       <div class="callout">
-        <strong>Practical verdict:</strong> build the CLI + PR review MVP first. Treat the workaround database as the moat, but start tiny and curated. AI comes after the deterministic engine is useful.
+        <strong>Practical verdict:</strong> build toward an OSS-ready v1, not a thin public MVP. Treat the workaround database as the moat, but require schemas, fixtures, docs, governance, and CI integration before launch. AI comes after the deterministic engine is useful and trusted.
       </div>
     </section>
 

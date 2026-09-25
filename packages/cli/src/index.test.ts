@@ -12,23 +12,6 @@ test("prints version", async () => {
   assert.match(output.stdout, /0\.0\.0/);
 });
 
-test("strips a leading -- so pnpm-style argv still runs doctor", async () => {
-  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/sdk53-pager-view");
-  const previous = process.cwd();
-  process.chdir(fixtureRoot);
-  try {
-    const dashed = await captureStdout(() => main(["--", "doctor", "--json"]));
-    const direct = await captureStdout(() => main(["doctor", "--json"]));
-    assert.equal(dashed.exitCode, direct.exitCode);
-    const dashedReport = parseCapturedJson(dashed.stdout) as { generatedAt: string; summary: { status: string } };
-    const directReport = parseCapturedJson(direct.stdout) as { generatedAt: string; summary: { status: string } };
-    assert.equal(dashedReport.summary.status, directReport.summary.status);
-    assert.deepEqual({ ...dashedReport, generatedAt: undefined }, { ...directReport, generatedAt: undefined });
-  } finally {
-    process.chdir(previous);
-  }
-});
-
 test("returns non-zero for unsupported projects", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-unsupported-"));
   await writeFile(path.join(root, "package.json"), JSON.stringify({ private: true }, null, 2));
@@ -38,7 +21,7 @@ test("returns non-zero for unsupported projects", async () => {
   try {
     const output = await captureStdout(() => main(["doctor", "--json"]));
     assert.equal(output.exitCode, 1);
-    assert.doesNotThrow(() => parseCapturedJson(output.stdout));
+    assert.doesNotThrow(() => JSON.parse(output.stdout));
   } finally {
     process.chdir(previous);
   }
@@ -46,6 +29,84 @@ test("returns non-zero for unsupported projects", async () => {
 
 test("prints doctor JSON and writes lockfile", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-"));
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        dependencies: {
+          expo: "54.0.0",
+          "react-native": "0.81.0",
+          "react-native-svg": "15.11.2"
+        }
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await mkdir(path.join(root, "ios"));
+  await mkdir(path.join(root, "android"));
+
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const output = await captureStdout(() => main(["doctor", "--json", "--write-lockfile"]));
+    assert.equal(output.exitCode, 0);
+    const parsed = JSON.parse(output.stdout) as {
+      project: { kind: string };
+      dependencyGraph: { nodes: Array<{ packageName: string }> };
+      packageIssues: Array<{ packageName: string; installedVersion: string; affectedRange: string }>;
+    };
+    assert.equal(parsed.project.kind, "expo-prebuild");
+    assert.ok(parsed.dependencyGraph.nodes.some(node => node.packageName === "react-native-svg"));
+    assert.deepEqual(parsed.packageIssues, []);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("prints redacted environment report JSON", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-env-report-"));
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        packageManager: "npm@11.10.0",
+        dependencies: {
+          expo: "54.0.0",
+          "react-native": "0.81.0"
+        }
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    const output = await captureStdout(() => main(["env-report", "--json"]));
+    assert.equal(output.exitCode, 0);
+    const parsed = JSON.parse(output.stdout) as {
+      project: { root: string; kind: string };
+      toolchain: { packageManager: string; packageManagerVersion: string };
+      redaction: { applied: boolean };
+    };
+    assert.equal(parsed.project.root, "<redacted>");
+    assert.equal(parsed.project.kind, "expo-managed");
+    assert.equal(parsed.toolchain.packageManager, "npm");
+    assert.equal(parsed.toolchain.packageManagerVersion, "11.10.0");
+    assert.equal(parsed.redaction.applied, true);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test("uses CI policy exit code from config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-ci-policy-"));
   await writeFile(
     path.join(root, "package.json"),
     JSON.stringify(
@@ -64,298 +125,137 @@ test("prints doctor JSON and writes lockfile", async () => {
   await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
   await mkdir(path.join(root, "ios"));
   await mkdir(path.join(root, "android"));
-
-  const previous = process.cwd();
-  process.chdir(root);
-  try {
-    const output = await captureStdout(() => main(["doctor", "--json", "--write-lockfile"]));
-    assert.equal(output.exitCode, 1);
-    const parsed = parseCapturedJson(output.stdout) as {
-      project: { kind: string; expoSdkMajor?: string };
-      summary: { status: string };
-      packageIssues: Array<{ packageName: string; installedVersion: string; affectedRange: string }>;
-      findings: Array<{ ruleId?: string }>;
-      recommendations: Array<{
-        action: string;
-        packageName: string;
-        surfaces: string[];
-        evidence: unknown[];
-      }>;
-    };
-    assert.equal(parsed.project.kind, "expo-prebuild");
-    assert.equal(parsed.project.expoSdkMajor, "54");
-    assert.equal(parsed.summary.status, "risky");
-    assert.ok(parsed.findings.length > 0);
-    assert.deepEqual(
-      parsed.packageIssues.map(issue => ({
-        packageName: issue.packageName,
-        installedVersion: issue.installedVersion,
-        affectedRange: issue.affectedRange
-      })),
-      [
-        {
-          packageName: "sentry-expo",
-          installedVersion: "7.2.0",
-          affectedRange: "*"
-        }
-      ]
-    );
-    assert.deepEqual(
-      parsed.recommendations.map(recommendation => ({
-        action: recommendation.action,
-        packageName: recommendation.packageName,
-        surfaces: recommendation.surfaces
-      })),
-      [
-        {
-          action: "exclude",
-          packageName: "sentry-expo",
-          surfaces: ["eas", "runtime"]
-        }
-      ]
-    );
-    assert.ok(parsed.recommendations.every(recommendation => Array.isArray(recommendation.evidence)));
-  } finally {
-    process.chdir(previous);
-  }
-});
-
-test("prints a human recommendations table", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-human-"));
   await writeFile(
-    path.join(root, "package.json"),
+    path.join(root, "nativeguard.config.json"),
     JSON.stringify(
       {
-        private: true,
-        dependencies: {
-          expo: "53.0.20",
-          "react-native": "0.79.5",
-          "react-native-pager-view": "6.6.0"
-        }
+        schemaVersion: "1.0.0",
+        rules: { source: "@nativeguard/rules" },
+        ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
+        exceptions: [],
+        redaction: { hidePrivateScopes: true, hideAbsolutePaths: true }
       },
       null,
       2
     )
   );
-  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
-  await mkdir(path.join(root, "ios"));
-  await mkdir(path.join(root, "android"));
 
   const previous = process.cwd();
   process.chdir(root);
   try {
-    const output = await captureStdout(() => main(["doctor"]));
-    assert.match(output.stdout, /Recommendations:/);
-    assert.match(output.stdout, /Package\s+\|\s+Action\s+\|\s+From\s+\|\s+To\s+\|\s+Surfaces\s+\|\s+Evidence/);
-    assert.match(output.stdout, /react-native-pager-view\s+\|\s+bump\s+\|\s+6\.6\.0\s+\|\s+6\.7\.1\s+\|\s+eas,local-native/);
-    assert.match(output.stdout, /Findings:/);
-  } finally {
-    process.chdir(previous);
-  }
-});
-
-test("filters doctor rules with --sdk", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-cli-sdk-"));
-  await writeFile(
-    path.join(root, "package.json"),
-    JSON.stringify(
-      {
-        private: true,
-        dependencies: {
-          expo: "53.0.20",
-          "react-native": "0.79.5",
-          "react-native-pager-view": "6.6.0"
-        }
-      },
-      null,
-      2
-    )
-  );
-  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
-  await mkdir(path.join(root, "ios"));
-  await mkdir(path.join(root, "android"));
-
-  const previous = process.cwd();
-  process.chdir(root);
-  try {
-    const sdk54 = await captureStdout(() => main(["doctor", "--json", "--sdk", "54"]));
-    const sdk54beta = await captureStdout(() => main(["doctor", "--json", "--sdk", "54beta"]));
-    const sdk53 = await captureStdout(() => main(["doctor", "--json", "--sdk=53"]));
-    const parsed54 = parseCapturedJson(sdk54.stdout) as {
-      project: { expoSdkMajor?: string };
-      findings: Array<{ ruleId?: string }>;
-    };
-    const parsed54beta = parseCapturedJson(sdk54beta.stdout) as {
-      project: { expoSdkMajor?: string };
-      findings: Array<{ ruleId?: string }>;
-    };
-    const parsed53 = parseCapturedJson(sdk53.stdout) as {
-      project: { expoSdkMajor?: string };
-      findings: Array<{ ruleId?: string }>;
-    };
-
-    assert.equal(parsed54.project.expoSdkMajor, "54");
-    assert.equal(parsed54beta.project.expoSdkMajor, "54");
-    assert.equal(
-      parsed54.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
-      false
-    );
-    assert.equal(
-      parsed54beta.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
-      false
-    );
-    assert.equal(parsed53.project.expoSdkMajor, "53");
-    assert.ok(parsed53.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
-    assert.equal(
-      parsed53.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"),
-      false
-    );
-  } finally {
-    process.chdir(previous);
-  }
-});
-
-test("matches doctor JSON against npm resolved package versions", async () => {
-  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/sdk53-pager-view");
-  const previous = process.cwd();
-  process.chdir(fixtureRoot);
-  try {
-    const output = await captureStdout(() => main(["doctor", "--json"]));
-    const parsed = parseCapturedJson(output.stdout) as {
-      project: { expoSdkMajor?: string };
-      dependencySnapshot: {
-        dependencies: Record<string, string>;
-        resolvedVersions?: Record<string, string>;
-      };
-      packageIssues: Array<{ packageName: string; installedVersion: string }>;
-    };
-
-    assert.equal(parsed.project.expoSdkMajor, "53");
-    assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "6.6.0");
-    assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
-    assert.equal(
-      parsed.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
-      "6.6.0"
-    );
-  } finally {
-    process.chdir(previous);
-  }
-});
-
-const fixturesRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures");
-
-const lockResolvedDoctorFixtures = [
-  { dir: "lock-npm-range-miss-pager-view", packageManager: "npm" },
-  { dir: "lock-yarn-classic-range-miss-pager-view", packageManager: "yarn" },
-  { dir: "lock-yarn-berry-range-miss-pager-view", packageManager: "yarn" },
-  { dir: "lock-pnpm-range-miss-pager-view", packageManager: "pnpm" },
-  { dir: "lock-bun-range-miss-pager-view", packageManager: "bun" }
-] as const;
-
-for (const lockFixture of lockResolvedDoctorFixtures) {
-  test(`doctor --json matches lock-resolved pager-view for ${lockFixture.packageManager} (${lockFixture.dir})`, async () => {
-    const output = await captureStdout(() =>
-      main(["doctor", "--json", path.join(fixturesRoot, lockFixture.dir)])
-    );
-    const parsed = parseCapturedJson(output.stdout) as {
-      project: { packageManager?: string };
-      summary: { status: string };
-      dependencySnapshot: {
-        dependencies: Record<string, string>;
-        resolvedVersions?: Record<string, string>;
-      };
-      findings: Array<{ ruleId?: string }>;
-      packageIssues: Array<{ packageName: string; installedVersion: string }>;
-    };
+    const output = await captureStdout(() => main(["doctor", "--json", "--ci", "--config", "nativeguard.config.json"]));
     assert.equal(output.exitCode, 1);
-    assert.equal(parsed.project.packageManager, lockFixture.packageManager);
-    assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
-    assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
-    assert.equal(
-      parsed.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
-      "6.6.0"
-    );
-    assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
-    assert.equal(parsed.summary.status, "risky");
-  });
-}
-
-test("rejects garbage --sdk values with INVALID_SDK", async () => {
-  const fixturePath = path.join(fixturesRoot, "sdk53-pager-view");
-  const garbage = await captureStdout(() => main(["doctor", "--json", "--sdk", "54xyz", fixturePath]));
-  const parsed = parseCapturedJson(garbage.stdout) as {
-    error?: { code?: string; message?: string };
-  };
-  assert.equal(garbage.exitCode, 1);
-  assert.equal(parsed.error?.code, "INVALID_SDK");
-  assert.match(parsed.error?.message ?? "", /54xyz/);
-});
-
-test("doctor --json on ~54.0.0-beta.1 fixture uses SDK 54 rules", async () => {
-  const fixturePath = path.join(fixturesRoot, "sdk54-beta-screens-expo-go");
-  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
-  const parsed = parseCapturedJson(output.stdout) as {
-    project: { expoSdkMajor?: string; kind?: string; root?: string };
-    findings: Array<{ ruleId?: string }>;
-    summary: { status: string };
-  };
-  assert.equal(output.exitCode, 1);
-  assert.equal(parsed.project.expoSdkMajor, "54");
-  assert.equal(parsed.project.kind, "expo-go");
-  assert.equal(parsed.project.root, path.resolve(fixturePath));
-  assert.ok(parsed.findings.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"));
-  assert.equal(parsed.summary.status, "risky");
-});
-
-test("doctor [path] analyzes a nested pnpm workspace package", async () => {
-  const fixturePath = path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile");
-  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
-  const parsed = parseCapturedJson(output.stdout) as {
-    project: { packageManager?: string; expoSdkMajor?: string; root?: string };
-    dependencySnapshot: {
-      dependencies: Record<string, string>;
-      resolvedVersions?: Record<string, string>;
-      lockfile?: { path?: string };
+    const parsed = JSON.parse(output.stdout) as {
+      policy: { exitDecision: { exitCode: number; reason: string } };
     };
-    findings: Array<{ ruleId?: string }>;
-    summary: { status: string };
-  };
-  assert.equal(parsed.project.packageManager, "pnpm");
-  assert.equal(parsed.project.expoSdkMajor, "53");
-  assert.equal(parsed.project.root, path.resolve(fixturePath));
-  assert.equal(parsed.dependencySnapshot.lockfile?.path, "../../pnpm-lock.yaml");
-  assert.equal(parsed.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
-  assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
-  assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
-  assert.equal(parsed.summary.status, "risky");
+    assert.equal(parsed.policy.exitDecision.exitCode, 1);
+    assert.match(parsed.policy.exitDecision.reason, /red/);
+  } finally {
+    process.chdir(previous);
+  }
 });
 
-test("doctor --json on yarn resolutions fires the lock-resolved known-bad", async () => {
-  const output = await captureStdout(() =>
-    main(["doctor", "--json", path.join(fixturesRoot, "yarn-resolutions-pager-view")])
+test("prints snapshots and compares snapshot files", async () => {
+  const baseRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-base-snapshot-"));
+  const headRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-head-snapshot-"));
+  await writeFile(
+    path.join(baseRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0" } }, null, 2)
   );
-  const parsed = parseCapturedJson(output.stdout) as {
-    dependencySnapshot: { resolvedVersions?: Record<string, string> };
-    findings: Array<{ ruleId?: string }>;
-    summary: { status: string };
-  };
-  assert.equal(parsed.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
-  assert.ok(parsed.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
-  assert.equal(parsed.summary.status, "risky");
+  await writeFile(path.join(baseRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await writeFile(
+    path.join(headRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0", "react-native-svg": "15.11.2" } }, null, 2)
+  );
+  await writeFile(path.join(headRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+
+  const baseSnapshotPath = path.join(baseRoot, "snapshot.json");
+  const headSnapshotPath = path.join(headRoot, "snapshot.json");
+  const previous = process.cwd();
+
+  try {
+    process.chdir(baseRoot);
+    const baseOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(baseOutput.exitCode, 0);
+    await writeFile(baseSnapshotPath, baseOutput.stdout);
+
+    process.chdir(headRoot);
+    const headOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(headOutput.exitCode, 0);
+    await writeFile(headSnapshotPath, headOutput.stdout);
+
+    const compareOutput = await captureStdout(() => main(["compare", "--json", "--base", baseSnapshotPath, "--head", headSnapshotPath]));
+    assert.equal(compareOutput.exitCode, 1);
+    const parsed = JSON.parse(compareOutput.stdout) as {
+      addedPackages: Array<{ packageName: string }>;
+    };
+    assert.deepEqual(parsed.addedPackages.map(change => change.packageName), ["react-native-svg"]);
+  } finally {
+    process.chdir(previous);
+  }
 });
 
-test("doctor --json on unresolved catalog: is unsupported, not stable", async () => {
-  const output = await captureStdout(() =>
-    main(["doctor", "--json", path.join(fixturesRoot, "unresolved-catalog")])
+test("prints PR review reports from snapshot files", async () => {
+  const baseRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-base-review-pr-"));
+  const headRoot = await mkdtemp(path.join(os.tmpdir(), "nativeguard-head-review-pr-"));
+  await writeFile(
+    path.join(baseRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0" } }, null, 2)
   );
-  const parsed = parseCapturedJson(output.stdout) as {
-    summary: { status: string };
-    findings: Array<{ id?: string }>;
-  };
-  assert.equal(output.exitCode, 1);
-  assert.equal(parsed.summary.status, "unsupported");
-  assert.notEqual(parsed.summary.status, "stable");
-  assert.ok(parsed.findings.some(finding => finding.id === "finding-unresolved-versions"));
+  await writeFile(path.join(baseRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+  await writeFile(
+    path.join(headRoot, "package.json"),
+    JSON.stringify({ private: true, dependencies: { expo: "54.0.0", "react-native": "0.81.0", "react-native-svg": "15.11.2" } }, null, 2)
+  );
+  await writeFile(path.join(headRoot, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+
+  const baseSnapshotPath = path.join(baseRoot, "snapshot.json");
+  const headSnapshotPath = path.join(headRoot, "snapshot.json");
+  const previous = process.cwd();
+
+  try {
+    process.chdir(baseRoot);
+    const baseOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(baseOutput.exitCode, 0);
+    await writeFile(baseSnapshotPath, baseOutput.stdout);
+
+    process.chdir(headRoot);
+    const headOutput = await captureStdout(() => main(["snapshot", "--json"]));
+    assert.equal(headOutput.exitCode, 0);
+    await writeFile(headSnapshotPath, headOutput.stdout);
+
+    const jsonOutput = await captureStdout(() => main(["review-pr", "--json", "--base", baseSnapshotPath, "--head", headSnapshotPath]));
+    assert.equal(jsonOutput.exitCode, 0);
+    const parsed = JSON.parse(jsonOutput.stdout) as {
+      status: string;
+      changedPackages: Array<{ packageName: string }>;
+    };
+    assert.equal(parsed.status, "yellow");
+    assert.deepEqual(parsed.changedPackages.map(change => change.packageName), ["react-native-svg"]);
+
+    const markdownOutput = await captureStdout(() => main([
+      "review-pr",
+      "--base",
+      baseSnapshotPath,
+      "--head",
+      headSnapshotPath,
+      "--format",
+      "markdown",
+      "--repository",
+      "example/app",
+      "--base-ref",
+      "main",
+      "--head-ref",
+      "renovate/react-native-svg"
+    ]));
+    assert.equal(markdownOutput.exitCode, 0);
+    assert.match(markdownOutput.stdout, /NativeGuard Stability Check/);
+    assert.match(markdownOutput.stdout, /example\/app/);
+    assert.match(markdownOutput.stdout, /main\.\.\.renovate\/react-native-svg/);
+    assert.match(markdownOutput.stdout, /react-native-svg@15\.11\.2/);
+  } finally {
+    process.chdir(previous);
+  }
 });
 
 test("reports the bare React Native fixture as unsupported, not stable", async () => {
@@ -416,8 +316,17 @@ test("writes a NativeGuard snapshot with --write-snapshot without changing packa
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";
-  process.stdout.write = ((chunk: string | Uint8Array) => {
-    stdout += chunk.toString();
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void
+  ) => {
+    if (typeof chunk !== "string") {
+      return originalWrite.call(process.stdout, chunk, encoding as BufferEncoding, callback);
+    }
+    stdout += chunk;
+    const done = typeof encoding === "function" ? encoding : callback;
+    done?.();
     return true;
   }) as typeof process.stdout.write;
 

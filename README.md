@@ -127,7 +127,7 @@ When analysis runs (including `unsupported` reports such as bare React Native), 
 | `schemaVersion` | Report schema version (`"1.0.0"`). |
 | `recommendations` | Array of recommendation objects. Empty when there are none (clean or unsupported bare RN). |
 | `summary.status` | `stable` \| `accepted-exception` \| `risky` \| `unsupported`. |
-| `project.kind` | `expo-prebuild` \| `expo-go` \| `bare-react-native`. |
+| `project.kind` | `expo-managed` \| `expo-prebuild` \| `expo-go` \| `bare-react-native`. Expo without native directories is `expo-managed`. |
 | `project.root` | Absolute path of the analyzed project. |
 
 The same object also includes `generatedAt`, `nativeguard`, `dependencySnapshot`, `findings`, `packageIssues`, `nextActions`, and `acceptedExceptions` (copied from `nativeguard-lock.json` when present).

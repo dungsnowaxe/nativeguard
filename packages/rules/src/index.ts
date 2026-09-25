@@ -11,7 +11,7 @@ export const RULES_PACKAGE = {
 
 const NATIVE_SURFACES = ["eas", "local-native"] as const;
 const MANAGED_SURFACES = ["eas", "runtime"] as const;
-const EXPO_KINDS = ["expo-prebuild", "expo-go"] as const;
+const EXPO_KINDS = ["expo-prebuild", "expo-go", "expo-managed"] as const;
 
 export const bundledRules: CompatibilityRule[] = [
   {
@@ -272,7 +272,7 @@ export const bundledRules: CompatibilityRule[] = [
     packageName: "react-native-screens",
     affectedRange: "*",
     context: {
-      projectKinds: ["expo-go"],
+      projectKinds: ["expo-go", "expo-managed"],
       expoSdk: ["54"]
     },
     unless: {

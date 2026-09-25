@@ -253,8 +253,17 @@ async function doctorJson(root: string): Promise<DoctorJson> {
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";
-  process.stdout.write = ((chunk: string | Uint8Array) => {
-    stdout += chunk.toString();
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void
+  ) => {
+    if (typeof chunk !== "string") {
+      return originalWrite.call(process.stdout, chunk, encoding as BufferEncoding, callback);
+    }
+    stdout += chunk;
+    const done = typeof encoding === "function" ? encoding : callback;
+    done?.();
     return true;
   }) as typeof process.stdout.write;
 

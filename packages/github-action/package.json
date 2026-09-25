@@ -1,10 +1,7 @@
 {
-  "name": "@nativeguard/cli",
+  "name": "@nativeguard/github-action",
   "version": "0.0.0",
   "type": "module",
-  "bin": {
-    "nativeguard": "./dist/index.js"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,8 +14,6 @@
     "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@nativeguard/core": "workspace:*",
-    "@nativeguard/github-action": "workspace:*",
     "@nativeguard/schema": "workspace:*"
   }
 }

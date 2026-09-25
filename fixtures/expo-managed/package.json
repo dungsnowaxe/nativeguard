@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "packageManager": "npm@11.10.0",
+  "dependencies": {
+    "expo": "54.0.0",
+    "expo-router": "6.0.0",
+    "react-native": "0.81.0"
+  },
+  "expo": {
+    "newArchEnabled": true
+  }
+}

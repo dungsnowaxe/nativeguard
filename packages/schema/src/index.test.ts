@@ -4,8 +4,12 @@ import {
   CONFIG_SCHEMA_VERSION,
   LOCKFILE_SCHEMA_VERSION,
   PR_REVIEW_SCHEMA_VERSION,
+  PROJECT_KINDS,
+  RECOMMENDATION_ACTIONS,
+  RECOMMENDATION_SURFACES,
   RULE_SCHEMA_VERSION,
   SNAPSHOT_SCHEMA_VERSION,
+  STABILITY_STATUSES,
   validateCompatibilityRule,
   validateCompatibilityRuleV1,
   validateDoctorReport,
@@ -14,7 +18,8 @@ import {
   validateNativeGuardEnvironmentReport,
   validateNativeGuardReportV1,
   validateNativeGuardSnapshot,
-  validatePrReviewReport
+  validatePrReviewReport,
+  validateRecommendation
 } from "./index.js";
 
 test("validates compatibility rules", () => {
@@ -80,11 +85,12 @@ test("validates report shape", () => {
     schemaVersion: "1.0.0",
     generatedAt: new Date().toISOString(),
     nativeguard: {},
-    project: {},
+    project: { kind: "expo-prebuild", root: "/tmp/app" },
     dependencySnapshot: {},
-    summary: {},
+    summary: { status: "stable" },
     packageIssues: [],
     findings: [],
+    recommendations: [],
     nextActions: []
   });
 
@@ -172,6 +178,131 @@ test("validates PR review report shape", () => {
     requiredActions: [],
     verificationChecklist: [],
     evidence: []
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("requires schemaVersion, recommendations[], summary.status, project.kind, and project.root", () => {
+  const result = validateDoctorReport({
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: {},
+    dependencySnapshot: {},
+    summary: {},
+    packageIssues: [],
+    findings: [],
+    nextActions: []
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some(error => error.includes("schemaVersion")));
+  assert.ok(result.errors.some(error => error.includes("recommendations")));
+  assert.ok(result.errors.some(error => error.includes("summary.status")));
+  assert.ok(result.errors.some(error => error.includes("project.kind")));
+  assert.ok(result.errors.some(error => error.includes("project.root")));
+  assert.deepEqual(PROJECT_KINDS, ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"]);
+  assert.deepEqual(STABILITY_STATUSES, ["stable", "accepted-exception", "risky", "unsupported"]);
+});
+
+test("allows additive unknown fields on doctor reports", () => {
+  const result = validateDoctorReport({
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: { kind: "expo-go", root: "/tmp/app" },
+    dependencySnapshot: {},
+    summary: { status: "risky" },
+    packageIssues: [],
+    findings: [],
+    recommendations: [],
+    nextActions: [],
+    futureField: { nested: true }
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("requires recommendations[] on doctor reports", () => {
+  const result = validateDoctorReport({
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: { kind: "expo-prebuild", root: "/tmp/app" },
+    dependencySnapshot: {},
+    summary: { status: "stable" },
+    packageIssues: [],
+    findings: [],
+    nextActions: []
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some(error => error.includes("recommendations")));
+});
+
+test("freezes recommendation action, evidence, and surfaces", () => {
+  const result = validateRecommendation({
+    action: "bump",
+    packageName: "react-native-pager-view",
+    evidence: [{ type: "github_issue", summary: "scrollEnabled applied too late", confidence: "high" }],
+    surfaces: ["eas", "local-native"]
+  });
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(RECOMMENDATION_ACTIONS, ["bump", "pin", "leave", "exclude"]);
+  assert.deepEqual(RECOMMENDATION_SURFACES, ["eas", "local-native", "runtime"]);
+});
+
+test("rejects recommendation actions and surfaces outside the frozen contract", () => {
+  const invalidAction = validateRecommendation({
+    action: "patch",
+    packageName: "react-native-reanimated",
+    evidence: [],
+    surfaces: ["eas"]
+  });
+  const invalidSurface = validateRecommendation({
+    action: "leave",
+    packageName: "react-native-svg",
+    evidence: [],
+    surfaces: ["ci"]
+  });
+
+  assert.equal(invalidAction.valid, false);
+  assert.ok(invalidAction.errors.some(error => error.includes("bump|pin|leave|exclude")));
+  assert.equal(invalidSurface.valid, false);
+  assert.ok(invalidSurface.errors.some(error => error.includes("eas|local-native|runtime")));
+});
+
+test("rejects acceptedExceptions without a reason", () => {
+  const result = validateLockfile({
+    schemaVersion: LOCKFILE_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: {},
+    packageManager: "npm",
+    dependencySnapshot: {},
+    summary: {},
+    recommendations: [],
+    acceptedExceptions: [{ packageName: "expo-av", version: "16.0.7", reason: "   " }]
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some(error => error.includes("reason")));
+});
+
+test("allows acceptedExceptions on doctor reports", () => {
+  const result = validateDoctorReport({
+    schemaVersion: "1.0.0",
+    generatedAt: new Date().toISOString(),
+    nativeguard: {},
+    project: { kind: "expo-prebuild", root: "/tmp/app" },
+    dependencySnapshot: {},
+    summary: { status: "stable" },
+    packageIssues: [],
+    findings: [],
+    recommendations: [],
+    nextActions: [],
+    acceptedExceptions: [{ packageName: "sentry-expo", version: "7.2.0", reason: "Migration scheduled." }]
   });
 
   assert.equal(result.valid, true);

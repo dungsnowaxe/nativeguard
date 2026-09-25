@@ -8,6 +8,8 @@ import {
   LOCKFILE_SCHEMA_VERSION,
   PR_REVIEW_SCHEMA_VERSION,
   SNAPSHOT_SCHEMA_VERSION,
+  isRecommendationAction,
+  type AcceptedException,
   type CompatibilityRule,
   type DependencyGraph,
   type DependencyGraphNode,
@@ -26,6 +28,9 @@ import {
   type PrReviewReport,
   type ProjectKind,
   type ProjectProfile,
+  type Recommendation,
+  type RecommendationAction,
+  type RecommendationSurface,
   type RecommendedAction,
   type SnapshotComparison,
   type StabilityStatus,
@@ -35,6 +40,12 @@ import {
   validateNativeGuardSnapshot,
   validateNativeGuardConfig
 } from "@nativeguard/schema";
+import {
+  readInstallLockfile,
+  resolveDeclaredSpecifiers,
+  resolveWorkspaceContext,
+  type PackageJson as WorkspacePackageJson
+} from "./workspace.js";
 
 export class NativeGuardError extends Error {
   constructor(
@@ -51,27 +62,39 @@ export interface AnalyzeOptions {
   configPath?: string;
   ci?: boolean;
   now?: Date;
+  sdk?: string;
 }
 
 export interface ExplainPackageOptions extends AnalyzeOptions {
   packageName: string;
 }
 
-interface PackageJson {
+interface PackageJson extends WorkspacePackageJson {
   packageManager?: string;
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  overrides?: Record<string, string>;
-  resolutions?: Record<string, string>;
-  pnpm?: {
-    overrides?: Record<string, string>;
-    packageExtensions?: Record<string, unknown>;
-    patchedDependencies?: Record<string, string>;
-  };
-  workspaces?: string[] | { packages?: string[] };
   expo?: {
     newArchEnabled?: boolean;
   };
+}
+
+const EXPO_SDK_SOFT_CHANNEL =
+  /^(?:alpha|beta|rc|canary|preview|dev|next|snapshot)(?:[.+-][\w.-]*)?$/i;
+
+/**
+ * Parse an Expo SDK major from a declared/resolved `expo` version or `--sdk`.
+ * Accepts majors (`54`), range prefixes (`~54.0.0`), and unambiguous
+ * prerelease/soft forms (`54.0.0-beta.1`, `54beta`, `54.0.0-canary-20250729-d8899ae`).
+ * Does not prefix-match digit-prefixed garbage such as `54xyz`.
+ */
+export function parseExpoSdkMajor(version: string): string | undefined {
+  const withoutRangePrefix = version.trim().replace(/^[~^=vV]+/, "");
+  if (!withoutRangePrefix) return undefined;
+  const match = withoutRangePrefix.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$/);
+  if (!match?.[1]) return undefined;
+  const suffix = match[4] ?? "";
+  if (suffix === "") return match[1];
+  const channel = suffix.replace(/^[-.]/, "");
+  if (EXPO_SDK_SOFT_CHANNEL.test(channel)) return match[1];
+  return undefined;
 }
 
 export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorReport> {
@@ -81,24 +104,75 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const config = await loadNativeGuardConfig(root, options.configPath);
   const profile = await detectProjectProfile(root, packageJson);
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
-  const dependencyGraph = await createDependencyGraph(root, packageJson, profile.packageManager);
-  const rawFindings = evaluateRules(loadBundledRules(), profile, dependencySnapshot);
+  const expoSdkMajor = resolveExpoSdkMajor(options.sdk, dependencySnapshot, profile);
+  const resolvedExpo = dependencySnapshot.resolvedVersions?.expo ?? profile.expoVersion;
+  const resolvedReactNative =
+    dependencySnapshot.resolvedVersions?.["react-native"] ?? profile.reactNativeVersion;
+  const analyzedProfile = {
+    ...profile,
+    ...(resolvedExpo ? { expoVersion: resolvedExpo } : {}),
+    ...(resolvedReactNative ? { reactNativeVersion: resolvedReactNative } : {}),
+    ...(expoSdkMajor ? { expoSdkMajor } : {})
+  };
+  const dependencyGraph = await createDependencyGraph(root, packageJson, analyzedProfile.packageManager);
+  const snapshot = await readNativeGuardLockfile(root);
+  const acceptedExceptions = snapshot?.acceptedExceptions ?? [];
+  const nativeguard = {
+    cliVersion: options.cliVersion,
+    rulesPackage: RULES_PACKAGE
+  };
+
+  if (analyzedProfile.kind === "bare-react-native") {
+    const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, dependencyGraph, now);
+    const findings = createUnsupportedBareReactNativeFindings();
+    const summary = {
+      status: "unsupported" as const,
+      findingCounts: { info: 0, warning: 0, error: 1 }
+    };
+    const exitDecision = evaluatePolicyExit(findings, exceptionState.stale, config, Boolean(options.ci), summary.status);
+    return {
+      schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
+      generatedAt: now.toISOString(),
+      nativeguard,
+      project: analyzedProfile,
+      dependencySnapshot,
+      dependencyGraph,
+      summary,
+      policy: {
+        ci: config.ci,
+        activeExceptions: exceptionState.active,
+        staleExceptions: exceptionState.stale,
+        exitDecision
+      },
+      packageIssues: [],
+      findings,
+      recommendations: [],
+      nextActions: createNextActions(summary.status, analyzedProfile, findings),
+      acceptedExceptions
+    };
+  }
+
+  const rawFindings = [
+    ...evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot),
+    ...createResolutionFindings(dependencySnapshot, analyzedProfile.packageManager)
+  ];
   const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, dependencyGraph, now);
-  const findings = applyActiveExceptions(rawFindings, exceptionState.active);
+  const findings = applyAcceptedExceptions(
+    applyActiveExceptions(rawFindings, exceptionState.active),
+    acceptedExceptions
+  );
   const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot, dependencyGraph);
   const allFindings = [...findings, ...staleExceptionFindings];
-  const summary = summarizeFindings(allFindings, profile.packageManager);
+  const summary = summarizeFindings(allFindings);
   const packageIssues = allFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
   const exitDecision = evaluatePolicyExit(allFindings, exceptionState.stale, config, Boolean(options.ci), summary.status);
+  const recommendations = createRecommendations(allFindings, analyzedProfile);
 
   return {
     schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
     generatedAt: now.toISOString(),
-    nativeguard: {
-      cliVersion: options.cliVersion,
-      rulesPackage: RULES_PACKAGE
-    },
-    project: profile,
+    nativeguard,
+    project: analyzedProfile,
     dependencySnapshot,
     dependencyGraph,
     summary,
@@ -110,7 +184,9 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     },
     packageIssues,
     findings: allFindings,
-    nextActions: createNextActions(summary.status, profile.packageManager)
+    recommendations,
+    nextActions: createNextActions(summary.status, analyzedProfile, allFindings),
+    acceptedExceptions
   };
 }
 
@@ -325,6 +401,7 @@ export function createPrReviewReportFromSnapshots(
 }
 
 export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: string): Promise<string> {
+  const existing = await readNativeGuardLockfile(rootDir);
   const lockfile: NativeGuardLockfile = {
     schemaVersion: LOCKFILE_SCHEMA_VERSION,
     generatedAt: report.generatedAt,
@@ -333,7 +410,8 @@ export async function writeNativeGuardLockfile(report: DoctorReport, rootDir: st
     packageManager: report.project.packageManager,
     dependencySnapshot: report.dependencySnapshot,
     summary: report.summary,
-    acceptedExceptions: []
+    recommendations: report.recommendations,
+    acceptedExceptions: report.acceptedExceptions ?? existing?.acceptedExceptions ?? []
   };
 
   const outputPath = path.join(rootDir, "nativeguard-lock.json");
@@ -401,6 +479,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
     hasExpoModules,
     expoModulesPackages,
     newArchitecture,
+    ...(newArchitecture.enabled === undefined ? {} : { newArchitectureEnabled: newArchitecture.enabled }),
     ...(workspace ? { workspace } : {}),
     lockfileState,
     detectionConfidence: "high" as const
@@ -478,7 +557,7 @@ export async function createDependencyGraph(
   const directNames = new Set(Object.keys(declaredDependencies));
   const patchedPackages = await detectPatchedPackages(root, packageJson);
   const overrides = {
-    ...(packageJson.overrides ?? {}),
+    ...stringOverrides(packageJson.overrides),
     ...(packageJson.pnpm?.overrides ?? {})
   };
   const resolutions = packageJson.resolutions ?? {};
@@ -516,6 +595,8 @@ export async function createDependencyGraph(
 }
 
 export async function detectPackageManager(root: string): Promise<PackageManagerName> {
+  const context = await resolveWorkspaceContext(root);
+  if (context.packageManager !== "unknown") return context.packageManager;
   if (await findLockfile(root, ["package-lock.json"])) return "npm";
   if (await findLockfile(root, ["yarn.lock"])) return "yarn";
   if (await findLockfile(root, ["pnpm-lock.yaml"])) return "pnpm";
@@ -782,13 +863,57 @@ function parsePackageQuery(query: string): { packageName: string; queryVersion?:
 }
 
 async function createDependencySnapshot(root: string, packageJson: PackageJson): Promise<DependencySnapshot> {
-  const packageManager = await detectPackageManager(root);
-  const lockfile = await readLockfile(root, packageManager);
+  const context = await resolveWorkspaceContext(root);
+  const installLockfile = await readInstallLockfile(context);
+  const declared = {
+    ...(packageJson.dependencies ?? {}),
+    ...(packageJson.devDependencies ?? {})
+  };
+  const { resolvedVersions, unresolvedSpecifiers } = resolveDeclaredSpecifiers(
+    declared,
+    installLockfile,
+    context,
+    {
+      ...(packageJson.resolutions ?? {}),
+      ...stringOverrides(packageJson.overrides),
+      ...(packageJson.pnpm?.overrides ?? {})
+    }
+  );
+  const packageManager = context.packageManager === "unknown" ? await detectPackageManager(root) : context.packageManager;
+  const lockfileMeta = await readLockfile(root, packageManager);
+  const relativeLockfile = context.lockfilePath
+    ? path.relative(root, context.lockfilePath).replaceAll("\\", "/") || context.lockfileName
+    : lockfileMeta?.path;
+
   return {
     dependencies: packageJson.dependencies ?? {},
     devDependencies: packageJson.devDependencies ?? {},
-    ...(lockfile ? { lockfile } : {})
+    ...(Object.keys(resolvedVersions).length > 0 ? { resolvedVersions } : {}),
+    ...(Object.keys(unresolvedSpecifiers).length > 0 ? { unresolvedSpecifiers } : {}),
+    ...(relativeLockfile
+      ? {
+          lockfile: {
+            path: relativeLockfile,
+            ...(installLockfile?.lockfileVersion !== undefined
+              ? { lockfileVersion: installLockfile.lockfileVersion }
+              : lockfileMeta?.lockfileVersion
+                ? { lockfileVersion: lockfileMeta.lockfileVersion }
+                : {}),
+            packageCount: installLockfile?.packageCount ?? lockfileMeta?.packageCount ?? 0,
+            ...(lockfileMeta?.fresh === undefined ? {} : { fresh: lockfileMeta.fresh })
+          }
+        }
+      : {})
   };
+}
+
+function stringOverrides(overrides: PackageJson["overrides"]): Record<string, string> {
+  if (!overrides) return {};
+  const result: Record<string, string> = {};
+  for (const [packageName, value] of Object.entries(overrides)) {
+    if (typeof value === "string") result[packageName] = value;
+  }
+  return result;
 }
 
 async function readLockfile(root: string, packageManager: PackageManagerName): Promise<DependencySnapshot["lockfile"]> {
@@ -1468,10 +1593,13 @@ function evaluateRules(
   const findings: Finding[] = [];
 
   for (const rule of rules) {
-    const installedVersion = allDependencies[rule.packageName];
+    const declaredVersion = allDependencies[rule.packageName];
+    const installedVersion = snapshot.resolvedVersions?.[rule.packageName] ?? declaredVersion;
     if (!ruleMatchesProfile(rule, profile)) continue;
+    if (!requiredPackagesInstalled(rule, snapshot, allDependencies)) continue;
     if (rule.packageName !== "react-native" && !installedVersion) continue;
     if (installedVersion && !versionMatchesRange(installedVersion, rule.affectedRange)) continue;
+    if (unlessConstraintMatches(rule, snapshot, allDependencies)) continue;
     const severity = rule.outcome === "risky" ? "error" : rule.outcome === "accepted-exception" ? "warning" : "info";
     const issue =
       installedVersion && rule.issue
@@ -1489,20 +1617,8 @@ function evaluateRules(
       confidence: rule.confidence,
       ...(issue ? { issue } : {}),
       evidence: rule.evidence,
-      remediation: rule.remediation
-    });
-  }
-
-  if (profile.packageManager !== "npm") {
-    findings.push({
-      id: `finding-package-manager-${profile.packageManager}`,
-      severity: "warning",
-      status: "unsupported",
-      title: `${profile.packageManager} support is not complete yet`,
-      detail: "NativeGuard detected the package manager but first-version analysis is npm-first.",
-      confidence: "high",
-      evidence: [],
-      remediation: [{ type: "manual-check", note: "Use the report as advisory until this package manager is fully supported." }]
+      remediation: rule.remediation,
+      ...(rule.surfaces ? { surfaces: rule.surfaces } : {})
     });
   }
 
@@ -1535,9 +1651,95 @@ function createPackageIssue(
 function ruleMatchesProfile(rule: CompatibilityRule, profile: ProjectProfile): boolean {
   if (!rule.context.projectKinds.includes(profile.kind)) return false;
   if (rule.context.packageManagers && !rule.context.packageManagers.includes(profile.packageManager)) return false;
-  if (rule.context.expoSdk && !matchesAnyVersionPattern(profile.expoVersion, rule.context.expoSdk)) return false;
+  if (rule.context.expoSdk && !ruleMatchesSdk(rule, profile.expoSdkMajor)) return false;
   if (rule.context.reactNative && !matchesAnyVersionPattern(profile.reactNativeVersion, rule.context.reactNative)) return false;
+  const newArchitectureEnabled = profile.newArchitectureEnabled ?? profile.newArchitecture?.enabled;
+  if (rule.context.newArchitecture !== undefined && newArchitectureEnabled !== rule.context.newArchitecture) {
+    return false;
+  }
   return true;
+}
+
+function requiredPackagesInstalled(
+  rule: CompatibilityRule,
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>
+): boolean {
+  const required = rule.context.requiresPackages;
+  if (!required || required.length === 0) return true;
+  return required.every(packageName => Boolean(resolvedOrDeclaredVersion(snapshot, declared, packageName)));
+}
+
+function unlessConstraintMatches(
+  rule: CompatibilityRule,
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>
+): boolean {
+  if (!rule.unless) return false;
+  const packageName = rule.unless.packageName ?? rule.packageName;
+  const version = resolvedOrDeclaredVersion(snapshot, declared, packageName);
+  return Boolean(version && versionMatchesRange(version, rule.unless.range));
+}
+
+function resolvedOrDeclaredVersion(
+  snapshot: DependencySnapshot,
+  declared: Record<string, string>,
+  packageName: string
+): string | undefined {
+  return snapshot.resolvedVersions?.[packageName] ?? declared[packageName];
+}
+
+function resolveExpoSdkMajor(
+  sdkFlag: string | undefined,
+  snapshot: DependencySnapshot,
+  profile: ProjectProfile
+): string | undefined {
+  if (sdkFlag !== undefined) {
+    const parsed = parseExpoSdkMajor(sdkFlag);
+    if (!parsed) {
+      throw new NativeGuardError(
+        `Invalid Expo SDK value "${sdkFlag}". Expected a major integer or an unambiguous prerelease/soft string such as 54, 54beta, 54.0.0-beta.1, or 54.0.0-canary.1.`,
+        "INVALID_SDK"
+      );
+    }
+    return parsed;
+  }
+
+  const expoVersion = snapshot.resolvedVersions?.expo ?? profile.expoVersion;
+  return expoVersion ? parseExpoSdkMajor(expoVersion) : undefined;
+}
+
+function ruleMatchesSdk(rule: CompatibilityRule, sdkMajor: string | undefined): boolean {
+  const required = rule.context.expoSdk;
+  if (!required || required.length === 0) return true;
+  if (!sdkMajor) return false;
+  return required.some(pattern => sdkPatternMatches(sdkMajor, pattern));
+}
+
+function sdkPatternMatches(sdkMajor: string, pattern: string): boolean {
+  const trimmed = pattern.trim();
+  const comparator = trimmed.match(/^(<=|>=|<|>)\s*(\d+)/);
+  if (comparator) {
+    const sdk = Number(sdkMajor);
+    const target = Number(comparator[2]);
+    const operator = comparator[1] as "<" | "<=" | ">" | ">=";
+    if (!Number.isFinite(sdk) || !Number.isFinite(target)) return false;
+    switch (operator) {
+      case "<":
+        return sdk < target;
+      case "<=":
+        return sdk <= target;
+      case ">":
+        return sdk > target;
+      case ">=":
+        return sdk >= target;
+      default: {
+        const exhaustive: never = operator;
+        return exhaustive;
+      }
+    }
+  }
+  return parseExpoSdkMajor(trimmed) === sdkMajor;
 }
 
 function matchesAnyVersionPattern(version: string | undefined, patterns: string[]): boolean {
@@ -1639,10 +1841,7 @@ function compareVersions(left: ParsedVersion, right: ParsedVersion): number {
   return left.patch - right.patch;
 }
 
-function summarizeFindings(
-  findings: Finding[],
-  packageManager: PackageManagerName
-): DoctorReport["summary"] {
+function summarizeFindings(findings: Finding[]): DoctorReport["summary"] {
   const findingCounts = {
     info: findings.filter(finding => finding.severity === "info").length,
     warning: findings.filter(finding => finding.severity === "warning").length,
@@ -1652,7 +1851,7 @@ function summarizeFindings(
   let status: StabilityStatus = "stable";
   if (findingCounts.error > 0) {
     status = "risky";
-  } else if (packageManager !== "npm") {
+  } else if (findings.some(finding => finding.status === "unsupported")) {
     status = "unsupported";
   } else if (findingCounts.warning > 0) {
     status = "accepted-exception";
@@ -1661,17 +1860,223 @@ function summarizeFindings(
   return { status, findingCounts };
 }
 
-function createNextActions(status: StabilityStatus, packageManager: PackageManagerName): string[] {
-  if (packageManager !== "npm") {
-    return ["NativeGuard detected this package manager, but full analysis is not implemented yet."];
+function createNextActions(status: StabilityStatus, profile: ProjectProfile, findings: Finding[]): string[] {
+  if (profile.kind === "bare-react-native") {
+    return [
+      "Bare React Native is not supported yet. NativeGuard skipped analysis and did not classify this project as stable."
+    ];
   }
-  if (status === "stable") {
-    return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
+  switch (status) {
+    case "stable":
+      return ["Keep dependencies pinned and rerun NativeGuard before accepting dependency upgrade PRs."];
+    case "accepted-exception":
+      return [
+        "pin/leave/exclude findings listed in nativeguard-lock.json acceptedExceptions (reason required) are accepted-exception and exit 0, not new risk. bump findings stay risky (exit 1) until the installed version changes. Edit that snapshot by hand; NativeGuard does not mutate package manager lockfiles."
+      ];
+    case "risky":
+      return ["Review risky findings before upgrading or releasing this app."];
+    case "unsupported": {
+      const unresolved = findings.find(finding => finding.id === "finding-unresolved-versions");
+      if (unresolved) return [unresolved.detail];
+      const bunLockb = findings.find(finding => finding.id === "finding-package-manager-bun-lockb");
+      if (bunLockb) return [bunLockb.detail];
+      const unknownLockfile = findings.find(finding => finding.id === "finding-package-manager-unknown");
+      if (unknownLockfile) return [unknownLockfile.detail];
+      return ["This project profile is unsupported. NativeGuard did not produce a stable compatibility result."];
+    }
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
   }
-  if (status === "accepted-exception") {
-    return ["Review accepted exceptions and record them in nativeguard-lock.json when intentional."];
+}
+
+function createRecommendations(findings: Finding[], profile: ProjectProfile): Recommendation[] {
+  const fallbackSurfaces = surfacesForProject(profile.kind);
+  const recommendations: Recommendation[] = [];
+
+  for (const finding of findings) {
+    for (const remediation of finding.remediation) {
+      if (!isRecommendationAction(remediation.type)) continue;
+      const surfaces = remediation.surfaces ?? finding.surfaces ?? fallbackSurfaces;
+      recommendations.push({
+        action: remediation.type,
+        packageName: remediation.packageName ?? finding.packageName ?? finding.ruleId ?? finding.id,
+        evidence: finding.evidence,
+        surfaces,
+        ...(finding.issue?.installedVersion ? { from: finding.issue.installedVersion } : {}),
+        ...(remediation.to ? { to: remediation.to } : {}),
+        ...(remediation.note ? { note: remediation.note } : {}),
+        ...(finding.ruleId ? { ruleId: finding.ruleId } : {})
+      });
+    }
   }
-  return ["Review risky findings before upgrading or releasing this app."];
+
+  return recommendations;
+}
+
+function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {
+  switch (kind) {
+    case "expo-prebuild":
+      return ["eas", "local-native"];
+    case "expo-managed":
+    case "expo-go":
+      return ["eas", "runtime"];
+    case "bare-react-native":
+      return ["local-native"];
+    default: {
+      const exhaustive: never = kind;
+      return exhaustive;
+    }
+  }
+}
+
+function createUnsupportedBareReactNativeFindings(): Finding[] {
+  return [
+    {
+      id: "finding-unsupported-bare-react-native",
+      severity: "error",
+      status: "unsupported",
+      title: "Bare React Native is not supported yet",
+      detail:
+        "NativeGuard detected a bare React Native project and skipped compatibility analysis. This result is unsupported, not stable.",
+      confidence: "high",
+      evidence: [],
+      remediation: [
+        {
+          type: "manual-check",
+          note: "Analyze an Expo prebuild project, or wait for dedicated bare React Native support."
+        }
+      ]
+    }
+  ];
+}
+
+function applyAcceptedExceptions(findings: Finding[], exceptions: AcceptedException[]): Finding[] {
+  if (exceptions.length === 0) return findings;
+  return findings.map(finding => {
+    if (!findingHasAcceptableExceptionRemediation(finding)) return finding;
+    const installedVersion = finding.issue?.installedVersion;
+    if (!installedVersion) return finding;
+    const accepted = exceptions.find(exception => acceptedExceptionMatches(exception, finding, installedVersion));
+    if (!accepted) return finding;
+    return {
+      ...finding,
+      status: "accepted-exception",
+      severity: "warning",
+      detail: `${finding.detail} Recorded as an accepted exception: ${accepted.reason}`,
+      ...(finding.issue
+        ? {
+            issue: {
+              ...finding.issue,
+              status: "accepted-exception",
+              severity: "warning"
+            }
+          }
+        : {})
+    };
+  });
+}
+
+function findingHasAcceptableExceptionRemediation(finding: Finding): boolean {
+  const actions = finding.remediation.map(action => action.type).filter(isRecommendationAction);
+  return actions.length > 0 && actions.every(isAcceptableExceptionAction);
+}
+
+function isAcceptableExceptionAction(action: RecommendationAction): boolean {
+  switch (action) {
+    case "pin":
+    case "leave":
+    case "exclude":
+      return true;
+    case "bump":
+      return false;
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function acceptedExceptionMatches(
+  exception: AcceptedException,
+  finding: Finding,
+  installedVersion: string
+): boolean {
+  if (exception.reason.trim().length === 0) return false;
+  if (exception.version !== installedVersion) return false;
+  if (exception.ruleId !== undefined && exception.ruleId !== finding.ruleId) return false;
+  if (exception.findingId !== undefined && exception.findingId !== finding.id) return false;
+  const packageNames = new Set(
+    [finding.packageName, finding.issue?.packageName, ...finding.remediation.map(action => action.packageName)].filter(
+      (name): name is string => Boolean(name)
+    )
+  );
+  return packageNames.has(exception.packageName);
+}
+
+function createResolutionFindings(snapshot: DependencySnapshot, packageManager: PackageManagerName): Finding[] {
+  const findings: Finding[] = [];
+  if (snapshot.lockfile?.path.endsWith("bun.lockb")) {
+    findings.push({
+      id: "finding-package-manager-bun-lockb",
+      severity: "warning",
+      status: "unsupported",
+      title: "Bun binary lockfile is not parsed",
+      detail:
+        "NativeGuard detected bun.lockb and cannot resolve installed versions from the binary format. Add a text bun.lock. This result is unsupported, not stable.",
+      confidence: "high",
+      evidence: [],
+      remediation: [
+        {
+          type: "manual-check",
+          note: "Commit bun.lock (text) so NativeGuard can resolve installed versions."
+        }
+      ]
+    });
+  }
+
+  const unresolved = snapshot.unresolvedSpecifiers ?? {};
+  const unresolvedNames = Object.keys(unresolved);
+  if (unresolvedNames.length > 0) {
+    const listed = unresolvedNames.map(name => `${name}@${unresolved[name]}`).join(", ");
+    findings.push({
+      id: "finding-unresolved-versions",
+      severity: "warning",
+      status: "unsupported",
+      title: "Some dependency versions could not be resolved",
+      detail: `NativeGuard could not resolve installed versions for: ${listed}. This result is unsupported, not stable.`,
+      confidence: "high",
+      evidence: [],
+      remediation: [
+        {
+          type: "manual-check",
+          note: "Add a readable lockfile, catalog, or override so NativeGuard can resolve these specifiers."
+        }
+      ]
+    });
+  }
+
+  if (packageManager === "unknown") {
+    findings.push({
+      id: "finding-package-manager-unknown",
+      severity: "warning",
+      status: "unsupported",
+      title: "Package manager lockfile was not found",
+      detail:
+        "NativeGuard did not find package-lock.json, yarn.lock, pnpm-lock.yaml, or bun.lock. Analysis used declared ranges only and is unsupported, not stable.",
+      confidence: "high",
+      evidence: [],
+      remediation: [
+        {
+          type: "manual-check",
+          note: "Add an install lockfile so NativeGuard can match resolved versions."
+        }
+      ]
+    });
+  }
+
+  return findings;
 }
 
 async function exists(filePath: string): Promise<boolean> {

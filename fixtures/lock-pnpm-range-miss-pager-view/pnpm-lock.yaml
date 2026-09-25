@@ -1,0 +1,19 @@
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      expo:
+        specifier: ~53.0.0
+        version: 53.0.20
+      react-native:
+        specifier: 0.79.5
+        version: 0.79.5
+      react-native-pager-view:
+        specifier: ^6.7.1
+        version: 6.6.0
+
+packages:
+  expo@53.0.20: {}
+  react-native@0.79.5: {}
+  react-native-pager-view@6.6.0: {}

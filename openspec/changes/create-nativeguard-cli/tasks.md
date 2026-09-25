@@ -68,3 +68,10 @@
 - [x] 9.3 Run `nativeguard doctor` manually against at least one Expo prebuild fixture.
 - [x] 9.4 Run `nativeguard doctor --json` and validate the output against the JSON schema.
 - [x] 9.5 Run the rule validation script against the bundled rules package.
+
+## 10. Agent/CI exit-code and JSON schema stability
+
+- [x] 10.1 Freeze and document doctor exit codes in README to match CLI behavior (`0` = stable or accepted-exception; `1` = risky, unsupported including bare RN, or analysis errors such as `INVALID_SDK`).
+- [x] 10.2 Document the JSON contract: analysis reports always include `schemaVersion`, `recommendations[]`, `summary.status`, `project.kind`, and `project.root`, and the contract is additive.
+- [x] 10.3 Add CLI tests asserting exit codes per fixture class (clean / risky / accepted-exception / unsupported / `INVALID_SDK`).
+- [x] 10.4 Add smoke coverage that `--json` shape is stable across those classes.

@@ -1,0 +1,18 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "lock-bun-range-miss-pager-view",
+      "dependencies": {
+        "expo": "~53.0.0",
+        "react-native": "0.79.5",
+        "react-native-pager-view": "^6.7.1"
+      }
+    }
+  },
+  "packages": {
+    "expo": ["expo@53.0.20", "", {}, "sha512-lock-resolved"],
+    "react-native": ["react-native@0.79.5", "", {}, "sha512-lock-resolved"],
+    "react-native-pager-view": ["react-native-pager-view@6.6.0", "", {}, "sha512-lock-resolved"]
+  }
+}

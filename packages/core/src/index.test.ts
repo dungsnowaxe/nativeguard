@@ -18,6 +18,8 @@ import {
   loadNativeGuardConfig,
   readNativeGuardSnapshot,
   readNativeGuardLockfile,
+  NativeGuardError,
+  parseExpoSdkMajor,
   writeNativeGuardSnapshot,
   writeNativeGuardLockfile
 } from "./index.js";
@@ -390,7 +392,7 @@ test("applies active exceptions to matching findings", async () => {
     dependencies: {
       expo: "54.0.0",
       "react-native": "0.81.0",
-      "react-native-pager-view": "6.9.1"
+      "sentry-expo": "7.2.0"
     },
     directories: ["ios", "android"],
     lockfile: "npm",
@@ -402,8 +404,8 @@ test("applies active exceptions to matching findings", async () => {
           ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
           exceptions: [
             {
-              packageName: "react-native-pager-view",
-              allowedVersions: "6.9.1",
+              packageName: "sentry-expo",
+              allowedVersions: "7.2.0",
               reason: "Temporary release exception while Android smoke tests are passing.",
               owner: "@mobile-platform",
               expiresAt: "2026-08-01",
@@ -424,7 +426,7 @@ test("applies active exceptions to matching findings", async () => {
     now: new Date("2026-07-11T00:00:00.000Z")
   });
 
-  const pagerFinding = report.findings.find(finding => finding.packageName === "react-native-pager-view");
+  const pagerFinding = report.findings.find(finding => finding.packageName === "sentry-expo");
   assert.equal(pagerFinding?.status, "accepted-exception");
   assert.equal(pagerFinding?.severity, "warning");
   assert.equal(report.policy?.activeExceptions.length, 1);
@@ -437,7 +439,7 @@ test("matches exceptions against lockfile-resolved versions, not declared ranges
     dependencies: {
       expo: "54.0.0",
       "react-native": "0.81.0",
-      "react-native-pager-view": "^6.9.0"
+      "sentry-expo": "^7.0.0"
     },
     directories: ["ios", "android"],
     lockfile: "npm",
@@ -449,7 +451,7 @@ test("matches exceptions against lockfile-resolved versions, not declared ranges
             dependencies: {
               expo: "54.0.0",
               "react-native": "0.81.0",
-              "react-native-pager-view": "^6.9.0"
+              "sentry-expo": "^7.0.0"
             }
           },
           "node_modules/expo": {
@@ -458,8 +460,8 @@ test("matches exceptions against lockfile-resolved versions, not declared ranges
           "node_modules/react-native": {
             version: "0.81.0"
           },
-          "node_modules/react-native-pager-view": {
-            version: "6.9.1"
+          "node_modules/sentry-expo": {
+            version: "7.2.0"
           }
         }
       },
@@ -474,8 +476,8 @@ test("matches exceptions against lockfile-resolved versions, not declared ranges
           ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
           exceptions: [
             {
-              packageName: "react-native-pager-view",
-              allowedVersions: "6.9.1",
+              packageName: "sentry-expo",
+              allowedVersions: "7.2.0",
               reason: "Temporary release exception while Android smoke tests are passing.",
               owner: "@mobile-platform",
               expiresAt: "2026-08-01",
@@ -496,13 +498,13 @@ test("matches exceptions against lockfile-resolved versions, not declared ranges
     now: new Date("2026-07-11T00:00:00.000Z")
   });
 
-  const pagerFinding = report.findings.find(finding => finding.packageName === "react-native-pager-view");
+  const pagerFinding = report.findings.find(finding => finding.packageName === "sentry-expo");
   assert.equal(pagerFinding?.status, "accepted-exception");
   assert.equal(report.policy?.activeExceptions.length, 1);
-  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.9.0");
+  assert.equal(report.dependencySnapshot.dependencies["sentry-expo"], "^7.0.0");
   assert.equal(
-    report.dependencyGraph?.nodes.find(node => node.packageName === "react-native-pager-view")?.installedVersion,
-    "6.9.1"
+    report.dependencyGraph?.nodes.find(node => node.packageName === "sentry-expo")?.installedVersion,
+    "7.2.0"
   );
 });
 
@@ -511,7 +513,7 @@ test("does not apply exceptions when lockfile version falls outside allowedVersi
     dependencies: {
       expo: "54.0.0",
       "react-native": "0.81.0",
-      "react-native-pager-view": "^6.9.0"
+      "sentry-expo": "^7.0.0"
     },
     directories: ["ios", "android"],
     lockfile: "npm",
@@ -523,7 +525,7 @@ test("does not apply exceptions when lockfile version falls outside allowedVersi
             dependencies: {
               expo: "54.0.0",
               "react-native": "0.81.0",
-              "react-native-pager-view": "^6.9.0"
+              "sentry-expo": "^7.0.0"
             }
           },
           "node_modules/expo": {
@@ -532,8 +534,8 @@ test("does not apply exceptions when lockfile version falls outside allowedVersi
           "node_modules/react-native": {
             version: "0.81.0"
           },
-          "node_modules/react-native-pager-view": {
-            version: "6.10.0"
+          "node_modules/sentry-expo": {
+            version: "7.3.0"
           }
         }
       },
@@ -548,8 +550,8 @@ test("does not apply exceptions when lockfile version falls outside allowedVersi
           ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
           exceptions: [
             {
-              packageName: "react-native-pager-view",
-              allowedVersions: "6.9.0",
+              packageName: "sentry-expo",
+              allowedVersions: "7.2.0",
               reason: "Pinned exception for an older install that is no longer present.",
               owner: "@mobile-platform",
               expiresAt: "2026-08-01",
@@ -570,7 +572,7 @@ test("does not apply exceptions when lockfile version falls outside allowedVersi
     now: new Date("2026-07-11T00:00:00.000Z")
   });
 
-  const pagerFinding = report.findings.find(finding => finding.packageName === "react-native-pager-view");
+  const pagerFinding = report.findings.find(finding => finding.packageName === "sentry-expo");
   assert.equal(pagerFinding?.status, "risky");
   assert.equal(report.policy?.activeExceptions.length, 0);
 });
@@ -580,7 +582,7 @@ test("reports stale exceptions and applies CI policy", async () => {
     dependencies: {
       expo: "54.0.0",
       "react-native": "0.81.0",
-      "react-native-pager-view": "6.9.1"
+      "sentry-expo": "7.2.0"
     },
     directories: ["ios", "android"],
     lockfile: "npm",
@@ -592,8 +594,8 @@ test("reports stale exceptions and applies CI policy", async () => {
           ci: { failOn: ["stale-exception"], warnOn: ["red", "yellow", "unknown"] },
           exceptions: [
             {
-              packageName: "react-native-pager-view",
-              allowedVersions: "6.9.1",
+              packageName: "sentry-expo",
+              allowedVersions: "7.2.0",
               reason: "Expired release exception.",
               owner: "@mobile-platform",
               expiresAt: "2026-01-01",
@@ -618,7 +620,7 @@ test("reports stale exceptions and applies CI policy", async () => {
   assert.equal(report.policy?.staleExceptions.length, 1);
   assert.equal(report.policy?.exitDecision.exitCode, 1);
   assert.match(report.policy?.exitDecision.reason ?? "", /stale-exception/);
-  assert.ok(report.findings.some(finding => finding.id === "finding-stale-exception-react-native-pager-view"));
+  assert.ok(report.findings.some(finding => finding.id === "finding-stale-exception-sentry-expo"));
 });
 
 test("explains risky packages with graph, rules, findings, and actions", async () => {
@@ -626,7 +628,7 @@ test("explains risky packages with graph, rules, findings, and actions", async (
     dependencies: {
       expo: "54.0.0",
       "react-native": "0.81.0",
-      "react-native-pager-view": "6.9.1"
+      "sentry-expo": "7.2.0"
     },
     directories: ["ios", "android"],
     lockfile: "npm"
@@ -635,18 +637,18 @@ test("explains risky packages with graph, rules, findings, and actions", async (
   const explanation = await explainPackage({
     rootDir: root,
     cliVersion: "0.0.0",
-    packageName: "react-native-pager-view",
+    packageName: "sentry-expo",
     now: new Date("2026-07-11T00:00:00.000Z")
   });
 
-  assert.equal(explanation.packageName, "react-native-pager-view");
+  assert.equal(explanation.packageName, "sentry-expo");
   assert.equal(explanation.status, "risky");
-  assert.equal(explanation.declaredRange, "6.9.1");
+  assert.equal(explanation.declaredRange, "7.2.0");
   assert.equal(explanation.direct, true);
-  assert.deepEqual(explanation.installedVersions, ["6.9.1"]);
-  assert.equal(explanation.matchingRules[0]?.id, "expo-sdk-54-react-native-pager-view-scroll-lock");
-  assert.ok(explanation.findings.some(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock"));
-  assert.ok(explanation.recommendedActions.some(action => action.type === "bump"));
+  assert.deepEqual(explanation.installedVersions, ["7.2.0"]);
+  assert.equal(explanation.matchingRules[0]?.id, "ban-sentry-expo-on-sdk-ge-50");
+  assert.ok(explanation.findings.some(finding => finding.ruleId === "ban-sentry-expo-on-sdk-ge-50"));
+  assert.ok(explanation.recommendedActions.some(action => action.type === "exclude"));
 });
 
 test("explains active package exceptions", async () => {
@@ -654,7 +656,7 @@ test("explains active package exceptions", async () => {
     dependencies: {
       expo: "54.0.0",
       "react-native": "0.81.0",
-      "react-native-pager-view": "6.9.1"
+      "sentry-expo": "7.2.0"
     },
     directories: ["ios", "android"],
     lockfile: "npm",
@@ -666,8 +668,8 @@ test("explains active package exceptions", async () => {
           ci: { failOn: ["red"], warnOn: ["yellow", "unknown", "stale-exception"] },
           exceptions: [
             {
-              packageName: "react-native-pager-view",
-              allowedVersions: "6.9.1",
+              packageName: "sentry-expo",
+              allowedVersions: "7.2.0",
               reason: "Temporary exception.",
               owner: "@mobile-platform",
               expiresAt: "2026-08-01",
@@ -685,7 +687,7 @@ test("explains active package exceptions", async () => {
   const explanation = await explainPackage({
     rootDir: root,
     cliVersion: "0.0.0",
-    packageName: "react-native-pager-view",
+    packageName: "sentry-expo",
     now: new Date("2026-07-11T00:00:00.000Z")
   });
 
@@ -894,9 +896,10 @@ test("analyzes project and writes lockfile", async () => {
   });
 
   assert.equal(report.project.kind, "expo-prebuild");
+  assert.equal(report.project.expoSdkMajor, "54");
   assert.equal(report.schemaVersion, "1.0.0");
   assert.ok(report.dependencyGraph);
-  assert.ok(report.findings.length >= 1);
+  assert.ok(Array.isArray(report.recommendations));
 
   const lockfilePath = await writeNativeGuardLockfile(report, root);
   assert.equal(path.basename(lockfilePath), "nativeguard-lock.json");
@@ -915,72 +918,305 @@ test("analyzes the Expo prebuild issue-version fixture", async () => {
 
   assert.equal(report.project.kind, "expo-prebuild");
   assert.equal(report.project.expoVersion, "54.0.33");
+  assert.equal(report.project.expoSdkMajor, "54");
   assert.equal(report.project.reactNativeVersion, "0.81.5");
   assert.equal(report.dependencySnapshot.lockfile?.packageCount, 8);
+  assert.equal(report.dependencySnapshot.dependencies["react-native-svg"], "15.10.0");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-svg"], "15.10.0");
   assert.equal(report.dependencySnapshot.dependencies.uniwind, undefined);
-  assert.deepEqual(
-    report.packageIssues.map(issue => ({
-      packageName: issue.packageName,
-      installedVersion: issue.installedVersion,
-      affectedRange: issue.affectedRange,
-      fixedVersion: issue.fixedVersion
-    })),
-    [
-      {
-        packageName: "react-native-svg",
-        installedVersion: "15.10.0",
-        affectedRange: "15.8.0 - 15.10.x",
-        fixedVersion: "15.11.2"
-      },
-      {
-        packageName: "react-native-pager-view",
-        installedVersion: "6.9.1",
-        affectedRange: "<7.0.2",
-        fixedVersion: "7.0.2"
-      },
-      {
-        packageName: "@sentry/react-native",
-        installedVersion: "7.2.0",
-        affectedRange: "~7.2.0",
-        fixedVersion: "7.13.x"
-      },
-      {
-        packageName: "react-native-screens",
-        installedVersion: "4.20.0",
-        affectedRange: ">=4.20.0",
-        fixedVersion: "4.19.x"
-      },
-      {
-        packageName: "@legendapp/list",
-        installedVersion: "2.0.0",
-        affectedRange: "2.x",
-        fixedVersion: "3.0.6"
-      }
-    ]
+  assert.deepEqual(report.packageIssues, []);
+  assert.deepEqual(report.findings, []);
+  assert.deepEqual(report.recommendations, []);
+  assert.equal(report.summary.status, "stable");
+  assert.ok(report.dependencyGraph);
+});
+
+test("parses Expo SDK major from project versions and --sdk overrides", () => {
+  assert.equal(parseExpoSdkMajor("54.0.33"), "54");
+  assert.equal(parseExpoSdkMajor("~54.0.0"), "54");
+  assert.equal(parseExpoSdkMajor("^53.2.1"), "53");
+  assert.equal(parseExpoSdkMajor("v52"), "52");
+  assert.equal(parseExpoSdkMajor("54"), "54");
+  assert.equal(parseExpoSdkMajor("54.0.0-beta.1"), "54");
+  assert.equal(parseExpoSdkMajor("~54.0.0-beta.1"), "54");
+  assert.equal(parseExpoSdkMajor("54beta"), "54");
+  assert.equal(parseExpoSdkMajor("54-beta.1"), "54");
+  assert.equal(parseExpoSdkMajor("54canary"), "54");
+  assert.equal(parseExpoSdkMajor("54.0.0-canary-20250729-d8899ae"), "54");
+  assert.equal(parseExpoSdkMajor("54.0.0-preview.1"), "54");
+  assert.equal(parseExpoSdkMajor("54xyz"), undefined);
+  assert.equal(parseExpoSdkMajor("54betafoo"), undefined);
+  assert.equal(parseExpoSdkMajor("sdk54"), undefined);
+  assert.equal(parseExpoSdkMajor("canary"), undefined);
+  assert.equal(parseExpoSdkMajor("latest"), undefined);
+  assert.equal(parseExpoSdkMajor(""), undefined);
+});
+
+test("rejects garbage --sdk overrides with INVALID_SDK", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+    lockfile: "npm"
+  });
+
+  await assert.rejects(
+    () => analyzeProject({ rootDir: root, cliVersion: "0.0.0", sdk: "54xyz" }),
+    (error: unknown) => {
+      assert.equal(error instanceof NativeGuardError, true);
+      assert.equal((error as NativeGuardError).code, "INVALID_SDK");
+      return true;
+    }
   );
-  assert.match(report.packageIssues[0]?.reason ?? "", /off-matrix/);
-  assert.equal(report.findings.find(finding => finding.ruleId === "expo-sdk-54-react-native-pager-view-scroll-lock")?.issue?.fixedVersion, "7.0.2");
-  assert.deepEqual(
-    report.findings.map(finding => finding.ruleId).sort(),
-    [
-      "expo-prebuild-new-architecture-manual-check",
-      "expo-sdk-54-react-native-pager-view-scroll-lock",
-      "expo-sdk-54-react-native-screens-rn-082-floor",
-      "expo-sdk-54-react-native-svg-off-matrix",
-      "expo-sdk-54-sentry-react-native-bundled-7-2",
-      "legendapp-list-v2-react-native-api-migration"
-    ].sort()
+  await assert.rejects(
+    () => analyzeProject({ rootDir: root, cliVersion: "0.0.0", sdk: "canary" }),
+    (error: unknown) => {
+      assert.equal(error instanceof NativeGuardError, true);
+      assert.equal((error as NativeGuardError).code, "INVALID_SDK");
+      return true;
+    }
+  );
+});
+
+test("prerelease expo ~54.0.0-beta.1 triggers SDK 54 rules", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "sdk54-beta-screens-expo-go"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.expoSdkMajor, "54");
+  assert.equal(report.project.kind, "expo-managed");
+  assert.equal(report.dependencySnapshot.dependencies.expo, "~54.0.0-beta.1");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.expo, "54.0.0-beta.1");
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"),
+    true
   );
   assert.equal(report.summary.status, "risky");
+});
+
+test("filters SDK-scoped rules by the current Expo major", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "53.0.20",
+      "react-native": "0.79.5",
+      "react-native-pager-view": "6.6.0"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm"
+  });
+
+  const sdk53 = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    sdk: "53"
+  });
+  const sdk54 = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0",
+    sdk: "54"
+  });
+
+  assert.equal(sdk53.project.expoSdkMajor, "53");
+  assert.ok(sdk53.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.ok(sdk53.recommendations.some(recommendation => recommendation.packageName === "react-native-pager-view"));
+
+  assert.equal(sdk54.project.expoSdkMajor, "54");
+  assert.equal(
+    sdk54.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+    false
+  );
+  assert.equal(
+    sdk54.findings.some(finding => finding.ruleId === "legendapp-list-v2-react-native-api-migration"),
+    false
+  );
+});
+
+test("reports bare React Native as unsupported without analyzing or marking stable", async () => {
+  const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures/bare-react-native");
+  const report = await analyzeProject({
+    rootDir: fixtureRoot,
+    cliVersion: "0.0.0",
+    now: new Date("2026-07-09T00:00:00.000Z")
+  });
+
+  assert.equal(report.project.kind, "bare-react-native");
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
+  assert.deepEqual(report.packageIssues, []);
+  assert.deepEqual(report.recommendations, []);
+  assert.equal(report.findings.length, 1);
+  assert.equal(report.findings[0]?.status, "unsupported");
+  assert.match(report.findings[0]?.detail ?? "", /skipped compatibility analysis/);
+  assert.match(report.nextActions[0] ?? "", /not supported/);
+});
+
+test("matches rules against npm lockfile-resolved versions and keeps declared ranges", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "~53.0.0",
+      "react-native": "0.79.5",
+      "react-native-pager-view": "^6.0.0"
+    },
+    directories: ["ios", "android"],
+    lockfile: "npm",
+    resolvedVersions: {
+      expo: "53.0.20",
+      "react-native": "0.79.5",
+      "react-native-pager-view": "6.6.0"
+    }
+  });
+
+  const report = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.0.0");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.equal(report.project.expoSdkMajor, "53");
+  assert.equal(
+    report.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
+    "6.6.0"
+  );
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+    true
+  );
+});
+
+test("does not match a declared range when the lockfile resolved version is outside the rule", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.33",
+      "react-native": "0.81.5",
+      "react-native-screens": ">=4.20.0"
+    },
+    lockfile: "npm",
+    resolvedVersions: {
+      expo: "54.0.33",
+      "react-native": "0.81.5",
+      "react-native-screens": "4.16.0"
+    }
+  });
+
+  const report = await analyzeProject({
+    rootDir: root,
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.kind, "expo-managed");
+  assert.equal(report.dependencySnapshot.dependencies["react-native-screens"], ">=4.20.0");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-screens"], "4.16.0");
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"),
+    false
+  );
+});
+
+const lockResolvedPagerViewFixtures = [
+  { dir: "lock-npm-range-miss-pager-view", packageManager: "npm", lockfile: "package-lock.json" },
+  { dir: "lock-yarn-classic-range-miss-pager-view", packageManager: "yarn", lockfile: "yarn.lock" },
+  { dir: "lock-yarn-berry-range-miss-pager-view", packageManager: "yarn", lockfile: "yarn.lock" },
+  { dir: "lock-pnpm-range-miss-pager-view", packageManager: "pnpm", lockfile: "pnpm-lock.yaml" },
+  { dir: "lock-bun-range-miss-pager-view", packageManager: "bun", lockfile: "bun.lock" }
+] as const;
+
+const fixturesRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures");
+
+for (const lockFixture of lockResolvedPagerViewFixtures) {
+  test(`matches lock-resolved pager-view for ${lockFixture.dir}`, async () => {
+    const report = await analyzeProject({
+      rootDir: path.join(fixturesRoot, lockFixture.dir),
+      cliVersion: "0.0.0"
+    });
+
+    assert.equal(report.project.packageManager, lockFixture.packageManager);
+    assert.equal(report.dependencySnapshot.lockfile?.path, lockFixture.lockfile);
+    assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+    assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+    assert.equal(
+      report.packageIssues.find(issue => issue.packageName === "react-native-pager-view")?.installedVersion,
+      "6.6.0"
+    );
+    assert.equal(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"), true);
+    assert.equal(report.summary.status, "risky");
+    assert.equal(
+      report.findings.some(
+        finding => finding.id.startsWith("finding-package-manager-") && finding.id !== "finding-package-manager-bun-lockb"
+      ),
+      false
+    );
+  });
+}
+
+test("reads the pnpm workspace catalog from a nested package", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "pnpm-workspace-catalog/apps/mobile"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.packageManager, "pnpm");
+  assert.equal(report.dependencySnapshot.lockfile?.path, "../../pnpm-lock.yaml");
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.equal(report.project.expoSdkMajor, "53");
+  assert.equal(report.project.reactNativeVersion, "0.79.5");
+  assert.equal(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"), true);
+  assert.equal(report.summary.status, "risky");
+});
+
+test("applies yarn resolutions of a known-bad pager-view", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "yarn-resolutions-pager-view"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.project.packageManager, "yarn");
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "^6.7.1");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.equal(report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"), true);
+  assert.equal(report.summary.status, "risky");
+});
+
+test("emits unsupported instead of silent stable when catalog: cannot be resolved", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "unresolved-catalog"),
+    cliVersion: "0.0.0"
+  });
+
+  assert.equal(report.dependencySnapshot.dependencies["react-native-pager-view"], "catalog:");
+  assert.equal(report.dependencySnapshot.resolvedVersions?.["react-native-pager-view"], undefined);
+  assert.equal(report.dependencySnapshot.unresolvedSpecifiers?.["react-native-pager-view"], "catalog:");
+  assert.equal(report.findings.some(finding => finding.id === "finding-unresolved-versions"), true);
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
+});
+
+test("emits unsupported for bun.lockb without a text bun.lock", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "~53.0.0",
+      "react-native": "0.79.5",
+      "react-native-pager-view": "^6.7.1"
+    },
+    directories: ["ios", "android"],
+    lockfile: "bun.lockb"
+  });
+
+  const report = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(report.project.packageManager, "bun");
+  assert.equal(report.findings.some(finding => finding.id === "finding-package-manager-bun-lockb"), true);
+  assert.equal(report.summary.status, "unsupported");
+  assert.notEqual(report.summary.status, "stable");
 });
 
 async function fixture(options: {
   dependencies?: Record<string, string>;
   packageJson?: Record<string, unknown>;
   directories?: string[];
-  lockfile?: "npm" | "yarn" | "pnpm" | "bun";
+  lockfile?: "npm" | "yarn" | "pnpm" | "bun" | "bun.lockb";
   lockfileContent?: string;
   files?: Record<string, string>;
+  resolvedVersions?: Record<string, string>;
 }): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "nativeguard-fixture-"));
   await writeFile(
@@ -1004,11 +1240,23 @@ async function fixture(options: {
   if (options.lockfile === "bun") {
     await writeFile(path.join(root, "bun.lock"), "");
   }
+  if (options.lockfile === "bun.lockb") {
+    await writeFile(path.join(root, "bun.lockb"), "");
+  }
 
   for (const [relativePath, content] of Object.entries(options.files ?? {})) {
     const filePath = path.join(root, relativePath);
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, content);
+  }
+
+  if (options.resolvedVersions && options.lockfile === "npm") {
+    const declared = options.dependencies ?? {};
+    const packages: Record<string, unknown> = { "": { dependencies: declared } };
+    for (const [packageName, version] of Object.entries(options.resolvedVersions)) {
+      packages[`node_modules/${packageName}`] = { version };
+    }
+    await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages }, null, 2));
   }
 
   return root;

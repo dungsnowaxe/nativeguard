@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "dependencies": {
+    "expo": "54.0.33",
+    "react-native": "0.81.5",
+    "sentry-expo": "7.2.0"
+  }
+}

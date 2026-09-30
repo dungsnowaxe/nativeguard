@@ -6,6 +6,7 @@ import {
   PR_REVIEW_SCHEMA_VERSION,
   PROJECT_KINDS,
   RECOMMENDATION_ACTIONS,
+  PATCHED_WORKAROUNDS,
   RECOMMENDATION_SURFACES,
   RULE_SCHEMA_VERSION,
   SNAPSHOT_SCHEMA_VERSION,
@@ -27,7 +28,8 @@ test("validates compatibility rules", () => {
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "expo-sdk-54-react-native-svg",
     packageName: "react-native-svg",
-    affectedRange: "15.8.0 - 15.10.x",
+    vulnerable: "15.8.0 - 15.10.x",
+    fixed: ">=15.11.2",
     context: { projectKinds: ["expo-prebuild"], expoSdk: ["54"] },
     outcome: "accepted-exception",
     confidence: "medium",
@@ -306,4 +308,67 @@ test("allows acceptedExceptions on doctor reports", () => {
   });
 
   assert.equal(result.valid, true);
+});
+
+test("requires advisory vulnerable range and accepts fixed/patched", () => {
+  const valid = validateCompatibilityRule({
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "pager-view-min-6.7.1-on-rn-079",
+    packageName: "react-native-pager-view",
+    vulnerable: "<6.7.1",
+    fixed: ">=6.7.1",
+    context: { projectKinds: ["expo-prebuild"], expoSdk: ["53"] },
+    outcome: "risky",
+    confidence: "high",
+    summary: "pager-view below 6.7.1 fails on RN 0.79.",
+    evidence: [{ type: "github_issue", summary: "floor", confidence: "high" }],
+    remediation: [{ type: "bump", packageName: "react-native-pager-view", to: "6.7.1", note: "Bump." }]
+  });
+  assert.equal(valid.valid, true);
+
+  const patchedOnly = validateCompatibilityRule({
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "sdk54-leave-expo-av-pending-audio-video-migration",
+    packageName: "expo-av",
+    vulnerable: "*",
+    patched: { workaround: "leave", note: "Leave until expo-audio / expo-video migration." },
+    context: { projectKinds: ["expo-prebuild"], expoSdk: ["54"] },
+    outcome: "risky",
+    confidence: "high",
+    summary: "expo-av is deprecated on SDK 54.",
+    evidence: [{ type: "docs", summary: "deprecated", confidence: "high" }],
+    remediation: [{ type: "leave", packageName: "expo-av", note: "Leave." }]
+  });
+  assert.equal(patchedOnly.valid, true);
+  assert.deepEqual(PATCHED_WORKAROUNDS, ["patch-package", "pin", "leave"]);
+
+  const missingVulnerable = validateCompatibilityRule({
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "missing-vulnerable",
+    packageName: "react-native-screens",
+    context: { projectKinds: ["expo-go"] },
+    outcome: "risky",
+    confidence: "high",
+    summary: "missing",
+    evidence: [],
+    remediation: []
+  });
+  assert.equal(missingVulnerable.valid, false);
+  assert.ok(missingVulnerable.errors.some(error => error.includes("vulnerable")));
+
+  const badPatched = validateCompatibilityRule({
+    schemaVersion: RULE_SCHEMA_VERSION,
+    id: "bad-patched",
+    packageName: "react-native-reanimated",
+    vulnerable: ">=4",
+    patched: { workaround: "override" },
+    context: { projectKinds: ["expo-prebuild"] },
+    outcome: "risky",
+    confidence: "high",
+    summary: "bad patched",
+    evidence: [],
+    remediation: []
+  });
+  assert.equal(badPatched.valid, false);
+  assert.ok(badPatched.errors.some(error => error.includes("patched.workaround")));
 });

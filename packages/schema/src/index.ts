@@ -3,7 +3,7 @@ export const CONFIG_SCHEMA_VERSION = "1.0.0";
 export const LOCKFILE_SCHEMA_VERSION = "1.0.0";
 export const SNAPSHOT_SCHEMA_VERSION = "1.0.0";
 export const PR_REVIEW_SCHEMA_VERSION = "1.0.0";
-export const RULE_SCHEMA_VERSION = "1.0.0";
+export const RULE_SCHEMA_VERSION = "1.1.0";
 
 export const PROJECT_KINDS = ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"] as const;
 export type ProjectKind = (typeof PROJECT_KINDS)[number];
@@ -15,6 +15,8 @@ export const RECOMMENDATION_ACTIONS = ["bump", "pin", "leave", "exclude"] as con
 export type RecommendationAction = (typeof RECOMMENDATION_ACTIONS)[number];
 export const RECOMMENDATION_SURFACES = ["eas", "local-native", "runtime"] as const;
 export type RecommendationSurface = (typeof RECOMMENDATION_SURFACES)[number];
+export const PATCHED_WORKAROUNDS = ["patch-package", "pin", "leave"] as const;
+export type PatchedWorkaround = (typeof PATCHED_WORKAROUNDS)[number];
 export type CanonicalStatus = "green" | "blue" | "yellow" | "red" | "unknown";
 export type PolicyStatus = CanonicalStatus | "stale-exception";
 export type Confidence = "low" | "medium" | "high";
@@ -206,8 +208,16 @@ export interface Recommendation {
 
 export interface CompatibilityIssueMetadata {
   reason: string;
+  /** Display / remediation target version or range string (not the advisory fixed range). */
   fixedVersion?: string;
   patchedVersion?: string;
+  patchFile?: string;
+}
+
+/** Optional workaround when there is no clean fixed semver range. Evidence-only. */
+export interface CompatibilityPatchedMetadata {
+  workaround: PatchedWorkaround;
+  note?: string;
   patchFile?: string;
 }
 
@@ -215,7 +225,15 @@ export interface CompatibilityRule {
   schemaVersion: typeof RULE_SCHEMA_VERSION;
   id: string;
   packageName: string;
-  affectedRange: string;
+  /** Advisory-style semver range that fails (Dependabot / GHSA vulnerable range). */
+  vulnerable: string;
+  /** Advisory-style semver range that clears the finding when the installed version matches. */
+  fixed?: string;
+  /**
+   * Workarounds when there is no clean fixed range (patch-package | pin | leave).
+   * Evidence layer only — NativeGuard never applies patches or mutates lockfiles.
+   */
+  patched?: CompatibilityPatchedMetadata;
   context: {
     projectKinds: ProjectKind[];
     expoSdk?: string[];
@@ -419,7 +437,13 @@ export interface PrReviewReport {
 export interface PackageIssue {
   packageName: string;
   installedVersion: string;
+  /** Back-compat alias of `vulnerable` for frozen packageIssues consumers. */
   affectedRange: string;
+  /** Advisory vulnerable semver range that matched. */
+  vulnerable: string;
+  /** Advisory fixed semver range when present on the rule. */
+  fixed?: string;
+  patched?: CompatibilityPatchedMetadata;
   status: StabilityStatus;
   severity: FindingSeverity;
   ruleId: string;
@@ -516,10 +540,21 @@ export function validateCompatibilityRule(value: unknown): ValidationResult {
   requireString(value, "schemaVersion", errors);
   requireString(value, "id", errors);
   requireString(value, "packageName", errors);
-  requireString(value, "affectedRange", errors);
+  requireString(value, "vulnerable", errors);
   requireString(value, "outcome", errors);
   requireString(value, "confidence", errors);
   requireString(value, "summary", errors);
+
+  if (value.fixed !== undefined && (typeof value.fixed !== "string" || value.fixed.length === 0)) {
+    errors.push("fixed must be a non-empty string when present");
+  }
+  if (value.patched !== undefined) {
+    if (!isRecord(value.patched)) {
+      errors.push("patched must be an object when present");
+    } else if (!isPatchedWorkaround(value.patched.workaround)) {
+      errors.push(`patched.workaround must be one of ${PATCHED_WORKAROUNDS.join("|")}`);
+    }
+  }
 
   if (!isRecord(value.context)) {
     errors.push("context must be an object");
@@ -686,6 +721,10 @@ export function isRecommendationAction(value: unknown): value is RecommendationA
 
 export function isRecommendationSurface(value: unknown): value is RecommendationSurface {
   return RECOMMENDATION_SURFACES.some(surface => surface === value);
+}
+
+export function isPatchedWorkaround(value: unknown): value is PatchedWorkaround {
+  return PATCHED_WORKAROUNDS.some(workaround => workaround === value);
 }
 
 export function validateNativeGuardReportV1(value: unknown): ValidationResult {

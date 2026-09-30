@@ -18,7 +18,7 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "sdk54-reanimated-requires-worklets-0.5.1",
     packageName: "react-native-reanimated",
-    affectedRange: ">=4",
+    vulnerable: ">=4",
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
@@ -70,7 +70,8 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "sdk53-ban-reanimated-4",
     packageName: "react-native-reanimated",
-    affectedRange: ">=4",
+    vulnerable: ">=4",
+    fixed: "<4",
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["53"]
@@ -110,7 +111,8 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "sdk54-legacy-arch-reanimated-v3",
     packageName: "react-native-reanimated",
-    affectedRange: ">=4",
+    vulnerable: ">=4",
+    fixed: "<4",
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
@@ -150,7 +152,8 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "pager-view-min-6.7.1-on-rn-079",
     packageName: "react-native-pager-view",
-    affectedRange: "<6.7.1",
+    vulnerable: "<6.7.1",
+    fixed: ">=6.7.1",
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["53"],
@@ -191,7 +194,11 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "ban-sentry-expo-on-sdk-ge-50",
     packageName: "sentry-expo",
-    affectedRange: "*",
+    vulnerable: "*",
+    patched: {
+      workaround: "leave",
+      note: "Remove sentry-expo and migrate to @sentry/react-native; no clean fixed range on sentry-expo itself."
+    },
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: [">=50"]
@@ -230,7 +237,12 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "flash-list-v2-requires-new-arch",
     packageName: "@shopify/flash-list",
-    affectedRange: ">=2",
+    vulnerable: ">=2",
+    fixed: "<2",
+    patched: {
+      workaround: "pin",
+      note: "Pin @shopify/flash-list to 1.x when New Architecture is off."
+    },
     context: {
       projectKinds: [...EXPO_KINDS],
       newArchitecture: false
@@ -270,13 +282,15 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "sdk54-pin-screens-tilde-4.16",
     packageName: "react-native-screens",
-    affectedRange: "*",
+    vulnerable: "*",
+    fixed: "~4.16.0",
+    patched: {
+      workaround: "pin",
+      note: "Pin react-native-screens to ~4.16.0 on SDK 54 managed / Expo Go."
+    },
     context: {
       projectKinds: ["expo-go", "expo-managed"],
       expoSdk: ["54"]
-    },
-    unless: {
-      range: "~4.16.0"
     },
     outcome: "risky",
     confidence: "high",
@@ -313,7 +327,8 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "nativewind-min-4.2.1-with-rngh-sdk54",
     packageName: "nativewind",
-    affectedRange: "<4.2.1",
+    vulnerable: "<4.2.1",
+    fixed: ">=4.2.1",
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"],
@@ -354,7 +369,11 @@ export const bundledRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "sdk54-leave-expo-av-pending-audio-video-migration",
     packageName: "expo-av",
-    affectedRange: "*",
+    vulnerable: "*",
+    patched: {
+      workaround: "leave",
+      note: "Leave the current expo-av install on SDK 54 until migrating to expo-audio and expo-video."
+    },
     context: {
       projectKinds: [...EXPO_KINDS],
       expoSdk: ["54"]
@@ -397,7 +416,7 @@ export const optionalRules: CompatibilityRule[] = [
     schemaVersion: RULE_SCHEMA_VERSION,
     id: "expo-prebuild-new-architecture-manual-check",
     packageName: "react-native",
-    affectedRange: "*",
+    vulnerable: "*",
     context: {
       projectKinds: ["expo-prebuild"],
       newArchitecture: true

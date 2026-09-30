@@ -157,3 +157,16 @@ Error payloads do not include `recommendations`, `summary`, or `project`.
 ## Out of scope (v1)
 
 Apply mode, GitHub Action review, hosted rule ingest, Expo compatibility-table ingest, package-lock mutation, and full turborepo/nx orchestration. Workspace lockfile + catalog/resolutions/overrides are in scope; deep monorepo task-graph analysis is not.
+
+
+## Known-bad miner (v0, script-only)
+
+Draft research notes for curated rules. Does **not** ingest Expo tables, mutate lockfiles, or auto-merge into the pack. Not a GitHub Action.
+
+```sh
+mise exec node@24 -- node scripts/mine-known-bad.mjs
+# or
+pnpm mine:known-bad
+```
+
+Writes markdown under `research/known-bad-candidates/` for the watchlist (reanimated, screens, pager-view, FlashList, nativewind, sentry).

@@ -44,3 +44,19 @@ test("keeps the New Architecture rule optional and out of the default pack", () 
 test("validates bundled rules", () => {
   assert.deepEqual(validateBundledRules(), []);
 });
+
+test("curated rules use advisory vulnerable/fixed/patched ranges", () => {
+  const rules = loadBundledRules();
+  assert.ok(rules.every(rule => typeof rule.vulnerable === "string" && rule.vulnerable.length > 0));
+  const pager = rules.find(rule => rule.id === "pager-view-min-6.7.1-on-rn-079");
+  assert.equal(pager?.vulnerable, "<6.7.1");
+  assert.equal(pager?.fixed, ">=6.7.1");
+  const screens = rules.find(rule => rule.id === "sdk54-pin-screens-tilde-4.16");
+  assert.equal(screens?.vulnerable, "*");
+  assert.equal(screens?.fixed, "~4.16.0");
+  assert.equal(screens?.patched?.workaround, "pin");
+  const expoAv = rules.find(rule => rule.id === "sdk54-leave-expo-av-pending-audio-video-migration");
+  assert.equal(expoAv?.vulnerable, "*");
+  assert.equal(expoAv?.fixed, undefined);
+  assert.equal(expoAv?.patched?.workaround, "leave");
+});

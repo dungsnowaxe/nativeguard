@@ -203,7 +203,7 @@ export async function explainPackage(options: ExplainPackageOptions): Promise<Pa
     if (rule.packageName !== packageName) return false;
     if (!ruleMatchesProfile(rule, report.project)) return false;
     const version = queryVersion ?? allDependencies[packageName] ?? nodes[0]?.installedVersion;
-    return version ? versionMatchesRange(version, rule.affectedRange) : rule.affectedRange === "*";
+    return version ? versionMatchesAdvisoryRule(version, rule) : rule.vulnerable === "*";
   });
   const activeExceptions = report.policy?.activeExceptions.filter(exception => exception.packageName === packageName) ?? [];
   const staleExceptions = report.policy?.staleExceptions.filter(exception => exception.packageName === packageName) ?? [];
@@ -1598,7 +1598,7 @@ function evaluateRules(
     if (!ruleMatchesProfile(rule, profile)) continue;
     if (!requiredPackagesInstalled(rule, snapshot, allDependencies)) continue;
     if (rule.packageName !== "react-native" && !installedVersion) continue;
-    if (installedVersion && !versionMatchesRange(installedVersion, rule.affectedRange)) continue;
+    if (installedVersion && !versionMatchesAdvisoryRule(installedVersion, rule)) continue;
     if (unlessConstraintMatches(rule, snapshot, allDependencies)) continue;
     const severity = rule.outcome === "risky" ? "error" : rule.outcome === "accepted-exception" ? "warning" : "info";
     const issue =
@@ -1613,7 +1613,7 @@ function evaluateRules(
       severity,
       status: rule.outcome,
       title: rule.summary,
-      detail: `${rule.packageName} ${rule.affectedRange} matched NativeGuard rule ${rule.id}.`,
+      detail: `${rule.packageName} vulnerable ${rule.vulnerable}${rule.fixed ? ` (fixed ${rule.fixed})` : ""} matched NativeGuard rule ${rule.id}.`,
       confidence: rule.confidence,
       ...(issue ? { issue } : {}),
       evidence: rule.evidence,
@@ -1634,7 +1634,10 @@ function createPackageIssue(
   return {
     packageName: rule.packageName,
     installedVersion,
-    affectedRange: rule.affectedRange,
+    affectedRange: rule.vulnerable,
+    vulnerable: rule.vulnerable,
+    ...(rule.fixed ? { fixed: rule.fixed } : {}),
+    ...(rule.patched ? { patched: rule.patched } : {}),
     status: rule.outcome,
     severity,
     ruleId: rule.id,
@@ -1745,6 +1748,12 @@ function sdkPatternMatches(sdkMajor: string, pattern: string): boolean {
 function matchesAnyVersionPattern(version: string | undefined, patterns: string[]): boolean {
   if (!version) return false;
   return patterns.some(pattern => versionMatchesRange(version, pattern));
+}
+
+function versionMatchesAdvisoryRule(version: string, rule: CompatibilityRule): boolean {
+  if (!versionMatchesRange(version, rule.vulnerable)) return false;
+  if (rule.fixed && versionMatchesRange(version, rule.fixed)) return false;
+  return true;
 }
 
 function versionMatchesRange(version: string, range: string): boolean {

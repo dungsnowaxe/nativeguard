@@ -28,6 +28,18 @@ const analysisFixtureClasses = [
     status: "risky"
   },
   {
+    name: "advisory-still-vulnerable",
+    dir: "advisory-pager-view-vulnerable",
+    exitCode: 1,
+    status: "risky"
+  },
+  {
+    name: "advisory-fixed-range",
+    dir: "advisory-pager-view-fixed",
+    exitCode: 0,
+    status: "stable"
+  },
+  {
     name: "unsupported",
     dir: "bare-react-native",
     exitCode: 1,

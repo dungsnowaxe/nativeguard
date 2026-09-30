@@ -270,6 +270,47 @@ test("does not fire nativewind without react-native-gesture-handler", async () =
   );
 });
 
+
+test("advisory still-in-vulnerable pager-view fixture is risky", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "advisory-pager-view-vulnerable"),
+    cliVersion: "0.0.0",
+    now: new Date("2026-09-30T00:00:00.000Z")
+  });
+  const finding = report.findings.find(item => item.ruleId === "pager-view-min-6.7.1-on-rn-079");
+  assert.ok(finding);
+  assert.equal(report.summary.status, "risky");
+  assert.equal(finding?.issue?.vulnerable, "<6.7.1");
+  assert.equal(finding?.issue?.fixed, ">=6.7.1");
+  assert.equal(finding?.issue?.affectedRange, "<6.7.1");
+});
+
+test("advisory resolved-in-fixed-range pager-view fixture leaves stable", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "advisory-pager-view-fixed"),
+    cliVersion: "0.0.0",
+    now: new Date("2026-09-30T00:00:00.000Z")
+  });
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+    false
+  );
+  assert.equal(report.summary.status, "stable");
+});
+
+test("advisory screens fixed-range fixture is stable (pin accepted path)", async () => {
+  const report = await analyzeProject({
+    rootDir: path.join(fixturesRoot, "advisory-screens-fixed"),
+    cliVersion: "0.0.0",
+    now: new Date("2026-09-30T00:00:00.000Z")
+  });
+  assert.equal(
+    report.findings.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"),
+    false
+  );
+  assert.equal(report.summary.status, "stable");
+});
+
 async function tempProject(options: {
   dependencies: Record<string, string>;
   directories?: string[];

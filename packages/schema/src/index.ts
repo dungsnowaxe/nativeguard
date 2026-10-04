@@ -218,7 +218,11 @@ export interface RecommendationChoice {
 /**
  * Two or more rules disagreed on the same package.
  * `winner` is the single action kept in `recommendations`.
+ * A bump whose target is inside another rule's vulnerable range, and not inside
+ * that rule's fixed range, loses to pin or leave. Otherwise the winner is
+ * deterministic (bump, then pin, then exclude, then leave, then rule id).
  * `lost` lists the rules and actions that were not emitted.
+ * An unresolved clash is never exit 0.
  */
 export interface RecommendationConflict {
   packageName: string;

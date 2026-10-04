@@ -3,7 +3,7 @@
     "schemaVersion": "1.1.0",
     "id": "a-e9-pin-gesture-handler",
     "packageName": "react-native-gesture-handler",
-    "vulnerable": ">=2.14.0",
+    "vulnerable": "2.14.0",
     "context": {
       "projectKinds": [
         "expo-managed",
@@ -17,7 +17,7 @@
     },
     "outcome": "risky",
     "confidence": "high",
-    "summary": "Fixture pin. Vulnerable range includes the other rule's bump target 2.16.0, so the bump would be a false fix.",
+    "summary": "Fixture pin for the installed 2.14.0 only. Does not cover bump target 2.16.0.",
     "evidence": [
       {
         "type": "manual",
@@ -53,7 +53,7 @@
     },
     "outcome": "risky",
     "confidence": "high",
-    "summary": "Fixture bump to 2.16.0. Loses because 2.16.0 is still inside the pin rule's vulnerable range.",
+    "summary": "Fixture bump to 2.16.0. Wins because 2.16.0 is outside the pin rule's exact vulnerable version.",
     "evidence": [
       {
         "type": "manual",

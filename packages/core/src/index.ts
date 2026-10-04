@@ -170,8 +170,10 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   );
   const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot, dependencyGraph);
   const allFindings = [...findings, ...staleExceptionFindings];
-  const recommendationResult = createRecommendations(allFindings, analyzedProfile);
-  const conflictFindings = recommendationResult.conflicts.map(createRecommendationConflictFinding);
+  const recommendationResult = createRecommendations(allFindings, analyzedProfile, rules);
+  const conflictFindings = recommendationResult.conflicts.map(conflict =>
+    createRecommendationConflictFinding(conflict, rules)
+  );
   const reportedFindings = [...allFindings, ...conflictFindings];
   const summary = summarizeFindings(reportedFindings);
   const packageIssues = reportedFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
@@ -2128,9 +2130,15 @@ const RECOMMENDATION_ACTION_RANK: Record<RecommendationAction, number> = {
   leave: 3
 };
 
+interface RuleAdvisory {
+  vulnerable: string;
+  fixed?: string;
+}
+
 function createRecommendations(
   findings: Finding[],
-  profile: ProjectProfile
+  profile: ProjectProfile,
+  rules: CompatibilityRule[]
 ): { recommendations: Recommendation[]; conflicts: RecommendationConflict[] } {
   const fallbackSurfaces = surfacesForProject(profile.kind);
   const flat: Recommendation[] = [];
@@ -2159,10 +2167,11 @@ function createRecommendations(
     byPackage.set(recommendation.packageName, group);
   }
 
+  const advisories = advisoriesByRuleId(rules);
   const recommendations: Recommendation[] = [];
   const conflicts: RecommendationConflict[] = [];
   for (const [packageName, group] of byPackage) {
-    const resolved = resolvePackageRecommendations(packageName, group);
+    const resolved = resolvePackageRecommendations(packageName, group, advisories);
     recommendations.push(...resolved.recommendations);
     if (resolved.conflict) conflicts.push(resolved.conflict);
   }
@@ -2170,9 +2179,21 @@ function createRecommendations(
   return { recommendations, conflicts };
 }
 
+function advisoriesByRuleId(rules: CompatibilityRule[]): Map<string, RuleAdvisory> {
+  const advisories = new Map<string, RuleAdvisory>();
+  for (const rule of rules) {
+    advisories.set(rule.id, {
+      vulnerable: rule.vulnerable,
+      ...(rule.fixed ? { fixed: rule.fixed } : {})
+    });
+  }
+  return advisories;
+}
+
 function resolvePackageRecommendations(
   packageName: string,
-  group: Recommendation[]
+  group: Recommendation[],
+  advisories: Map<string, RuleAdvisory>
 ): { recommendations: Recommendation[]; conflict?: RecommendationConflict } {
   const byRule = new Map<string, Recommendation[]>();
   for (const recommendation of group) {
@@ -2192,7 +2213,7 @@ function resolvePackageRecommendations(
     return { recommendations: dedupeRecommendations(group) };
   }
 
-  const ranked = [...sides].sort((left, right) => compareRecommendationSides(left, right));
+  const ranked = [...sides].sort((left, right) => compareRecommendationSides(left, right, sides, advisories));
   const winner = ranked[0];
   if (!winner) return { recommendations: group };
   const [, winnerRecommendations] = winner;
@@ -2213,11 +2234,55 @@ function resolvePackageRecommendations(
 
 function compareRecommendationSides(
   left: [string, Recommendation[]],
-  right: [string, Recommendation[]]
+  right: [string, Recommendation[]],
+  sides: Array<[string, Recommendation[]]>,
+  advisories: Map<string, RuleAdvisory>
 ): number {
+  const leftFalse = sideBumpIsFalseFix(left[1], otherSides(sides, left[0]), advisories);
+  const rightFalse = sideBumpIsFalseFix(right[1], otherSides(sides, right[0]), advisories);
+  if (leftFalse !== rightFalse) return leftFalse ? 1 : -1;
   const rankDiff = recommendationSideRank(left[1]) - recommendationSideRank(right[1]);
   if (rankDiff !== 0) return rankDiff;
   return left[0].localeCompare(right[0]);
+}
+
+function otherSides(
+  sides: Array<[string, Recommendation[]]>,
+  ruleId: string
+): Recommendation[][] {
+  return sides.filter(side => side[0] !== ruleId).map(([, recommendations]) => recommendations);
+}
+
+/**
+ * A bump is a false fix when its target is still inside another rule's vulnerable
+ * range and not inside that rule's fixed range, and that other rule offers pin or leave.
+ */
+function sideBumpIsFalseFix(
+  recommendations: Recommendation[],
+  others: Recommendation[][],
+  advisories: Map<string, RuleAdvisory>
+): boolean {
+  const bumpTargets = recommendations
+    .filter(recommendation => recommendation.action === "bump" && recommendation.to)
+    .map(recommendation => recommendation.to as string);
+  if (bumpTargets.length === 0) return false;
+  return others.some(other => {
+    if (!other.some(recommendation => recommendation.action === "pin" || recommendation.action === "leave")) {
+      return false;
+    }
+    return other.some(recommendation => {
+      if (!recommendation.ruleId) return false;
+      const advisory = advisories.get(recommendation.ruleId);
+      if (!advisory) return false;
+      return bumpTargets.some(target => bumpTargetStaysVulnerable(target, advisory));
+    });
+  });
+}
+
+function bumpTargetStaysVulnerable(target: string, advisory: RuleAdvisory): boolean {
+  if (!versionMatchesRange(target, advisory.vulnerable)) return false;
+  if (advisory.fixed && versionMatchesRange(target, advisory.fixed)) return false;
+  return true;
 }
 
 function recommendationSideRank(recommendations: Recommendation[]): number {
@@ -2251,7 +2316,8 @@ function recommendationChoice(recommendation: Recommendation): RecommendationCon
   };
 }
 
-function createRecommendationConflictFinding(conflict: RecommendationConflict): Finding {
+function createRecommendationConflictFinding(conflict: RecommendationConflict, rules: CompatibilityRule[]): Finding {
+  const advisories = advisoriesByRuleId(rules);
   const winnerLabel = `${conflict.winner.ruleId ?? "rule"} ${conflict.winner.action}${conflict.winner.to ? ` ${conflict.winner.to}` : ""}`;
   const lostLabel = conflict.lost
     .map(choice => `${choice.ruleId ?? "rule"} ${choice.action}${choice.to ? ` ${choice.to}` : ""}`)
@@ -2263,7 +2329,7 @@ function createRecommendationConflictFinding(conflict: RecommendationConflict): 
     severity: "error",
     status: "risky",
     title: `Conflicting recommendations for ${conflict.packageName}`,
-    detail: `Rules disagreed on ${conflict.packageName}. Kept ${winnerLabel}. Dropped ${lostLabel}. NativeGuard will not exit 0 while this conflict is unresolved.`,
+    detail: `Rules disagreed on ${conflict.packageName}. Kept ${winnerLabel}. ${conflictDecisionReason(conflict, advisories)} Dropped ${lostLabel}. NativeGuard will not exit 0 while this conflict is unresolved.`,
     confidence: "high",
     evidence: [],
     remediation: [
@@ -2274,6 +2340,31 @@ function createRecommendationConflictFinding(conflict: RecommendationConflict): 
       }
     ]
   };
+}
+
+function conflictDecisionReason(
+  conflict: RecommendationConflict,
+  advisories: Map<string, RuleAdvisory>
+): string {
+  const choices = [conflict.winner, ...conflict.lost];
+  const bump = choices.find(choice => choice.action === "bump" && choice.to);
+  const bumpLost = Boolean(bump && bump.ruleId !== conflict.winner.ruleId);
+  if (bump?.to && bumpLost) {
+    const blocker = choices.find(choice => {
+      if (!choice.ruleId || choice.ruleId === bump.ruleId) return false;
+      if (choice.action !== "pin" && choice.action !== "leave") return false;
+      const advisory = advisories.get(choice.ruleId);
+      return Boolean(advisory && bumpTargetStaysVulnerable(bump.to as string, advisory));
+    });
+    if (blocker?.ruleId) {
+      const advisory = advisories.get(blocker.ruleId);
+      return `Bump target ${bump.to} is inside ${blocker.ruleId} vulnerable range ${advisory?.vulnerable} and not inside its fixed range, so ${conflict.winner.action} wins.`;
+    }
+  }
+  if (conflict.winner.action === "bump" && conflict.winner.to) {
+    return `Bump target ${conflict.winner.to} is not inside another disagreeing rule's vulnerable range, so bump wins.`;
+  }
+  return `Deterministic action rank kept ${conflict.winner.action}.`;
 }
 
 function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {

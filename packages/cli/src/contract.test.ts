@@ -381,8 +381,45 @@ test("NG-E7: --sdk wins when app.config.js throws", async () => {
   assert.equal(parsed.summary.status, "stable");
 });
 
-test("NG-E9: disagreeing rules keep one recommendation and exit 1", async () => {
+test("NG-E9: bump target inside the pin rule vulnerable range loses to pin", async () => {
   const fixturePath = path.join(fixturesRoot, "e9-recommendation-conflict");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson;
+  const recommendations = parsed.recommendations as Array<{
+    action?: string;
+    packageName?: string;
+    to?: string;
+    ruleId?: string;
+  }>;
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.summary.status, "risky");
+  const gesture = recommendations.filter(item => item.packageName === "react-native-gesture-handler");
+  assert.equal(gesture.length, 1);
+  assert.equal(gesture[0]?.action, "pin");
+  assert.equal(gesture[0]?.to, "2.14.1");
+  assert.equal(gesture[0]?.ruleId, "a-e9-pin-gesture-handler");
+  assert.equal(parsed.recommendationConflicts?.length, 1);
+  const conflict = parsed.recommendationConflicts?.[0];
+  assert.equal(conflict?.packageName, "react-native-gesture-handler");
+  assert.equal(conflict?.winner.ruleId, "a-e9-pin-gesture-handler");
+  assert.equal(conflict?.winner.action, "pin");
+  assert.equal(conflict?.winner.to, "2.14.1");
+  assert.deepEqual(conflict?.lost, [
+    { ruleId: "e9-bump-gesture-handler", action: "bump", to: "2.16.0" }
+  ]);
+  const conflictFinding = parsed.findings?.find(
+    finding => finding.id === "finding-recommendation-conflict-react-native-gesture-handler"
+  );
+  assert.equal(conflictFinding?.status, "risky");
+  assert.match(
+    conflictFinding?.detail ?? "",
+    /Bump target 2\.16\.0 is inside a-e9-pin-gesture-handler vulnerable range >=2\.14\.0 and not inside its fixed range, so pin wins/
+  );
+});
+
+test("NG-E9: bump wins only when its target is outside the other vulnerable range", async () => {
+  const fixturePath = path.join(fixturesRoot, "e9-recommendation-conflict-bump");
   const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
   const parsed = parseCapturedJson(output.stdout) as DoctorJson;
   const recommendations = parsed.recommendations as Array<{
@@ -399,18 +436,19 @@ test("NG-E9: disagreeing rules keep one recommendation and exit 1", async () => 
   assert.equal(gesture[0]?.action, "bump");
   assert.equal(gesture[0]?.to, "2.16.0");
   assert.equal(gesture[0]?.ruleId, "e9-bump-gesture-handler");
-  assert.equal(parsed.recommendationConflicts?.length, 1);
   const conflict = parsed.recommendationConflicts?.[0];
-  assert.equal(conflict?.packageName, "react-native-gesture-handler");
   assert.equal(conflict?.winner.ruleId, "e9-bump-gesture-handler");
   assert.equal(conflict?.winner.action, "bump");
   assert.deepEqual(conflict?.lost, [
     { ruleId: "a-e9-pin-gesture-handler", action: "pin", to: "2.14.1" }
   ]);
-  assert.ok(parsed.findings?.some(finding => finding.id === "finding-recommendation-conflict-react-native-gesture-handler"));
-  assert.equal(
-    parsed.findings?.find(finding => finding.id === "finding-recommendation-conflict-react-native-gesture-handler")?.status,
-    "risky"
+  const conflictFinding = parsed.findings?.find(
+    finding => finding.id === "finding-recommendation-conflict-react-native-gesture-handler"
+  );
+  assert.equal(conflictFinding?.status, "risky");
+  assert.match(
+    conflictFinding?.detail ?? "",
+    /Bump target 2\.16\.0 is not inside another disagreeing rule's vulnerable range, so bump wins/
   );
 });
 
@@ -446,7 +484,7 @@ test("NG-E10: a missing lockfile resolution is not invented", async () => {
 
 interface DoctorJson extends AnalysisJson {
   project: AnalysisJson["project"] & { expoSdkMajor?: string; expoSdkVersions?: string[] };
-  findings?: Array<{ ruleId?: string; id?: string; status?: string }>;
+  findings?: Array<{ ruleId?: string; id?: string; status?: string; detail?: string }>;
   recommendationConflicts?: Array<{
     packageName: string;
     winner: { ruleId?: string; action: string; to?: string };

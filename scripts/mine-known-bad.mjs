@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
- * NativeGuard known-bad miner v1 (script-only, not a GitHub Action).
+ * NativeGuard known-bad miner v1.1 (script-only, not a GitHub Action).
  *
  * Searches only each package's own GitHub repo and expo/expo.
- * Drafts markdown under research/known-bad-candidates/. Does NOT edit the pack.
+ * expo/expo hits count only when the package name is in the title.
+ * Own-repo hits count only when the title has a version, "fixed in",
+ * "backport", or "pin". Feature PRs are dropped.
+ * At most 8 hits are kept per package. Drafts markdown under
+ * research/known-bad-candidates/. Does NOT edit the pack.
+ * Skips a new file when the kept URL set is unchanged.
  *
  * Usage:
  *   node scripts/mine-known-bad.mjs
@@ -81,10 +86,33 @@ export function mentionsPackage(text, packageName) {
   return text.toLowerCase().includes(packageName.toLowerCase());
 }
 
-export function keepHit(hit, packageName) {
-  const text = `${hit?.title ?? ""}\n${hit?.body ?? ""}`;
-  if (!mentionsPackage(text, packageName)) return false;
-  return VERSION_ISH.test(text) || PHRASE.test(text);
+const MAX_HITS = 8;
+const TITLE_VERSION = /(?:^|[^\w.])v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?(?![\w.])/i;
+const TITLE_PHRASE = /fixed in|backport|\bpin/i;
+
+export function ownRepoTitleKeeps(title) {
+  const value = String(title ?? "");
+  return TITLE_VERSION.test(value) || TITLE_PHRASE.test(value);
+}
+
+export function isFeaturePull(hit) {
+  const url = String(hit?.url ?? "");
+  if (!/\/pull\/\d+/.test(url)) return false;
+  const title = String(hit?.title ?? "");
+  if (TITLE_PHRASE.test(title)) return false;
+  return /^(feat|feature)(\b|[\s:(])/i.test(title.trim()) || /\bfeature\b/i.test(title);
+}
+
+export function keepHit(hit, packageName, repo) {
+  const title = String(hit?.title ?? "");
+  const body = String(hit?.body ?? "");
+  if (repo === EXPO_REPO) {
+    if (!mentionsPackage(title, packageName)) return false;
+    const text = `${title}\n${body}`;
+    return VERSION_ISH.test(text) || PHRASE.test(text);
+  }
+  if (isFeaturePull(hit)) return false;
+  return ownRepoTitleKeeps(title);
 }
 
 function normalizeRange(value) {
@@ -272,6 +300,25 @@ function githubUrls(markdown) {
   ].sort();
 }
 
+export function keptUrls(hits) {
+  return [...new Set(hits.map(hit => hit?.url).filter(Boolean))].sort();
+}
+
+export function draftEvidenceUrls(markdown) {
+  const section = String(markdown).split(/^## Evidence URLs\s*$/m)[1]?.split(/^## /m)[0] ?? "";
+  return [
+    ...new Set(
+      [...section.matchAll(/https:\/\/github\.com\/[^\s)>\]]+/g)].map(match => match[0].replace(/[.,]+$/, ""))
+    )
+  ].sort();
+}
+
+export function sameUrlSet(markdown, hits) {
+  const previous = draftEvidenceUrls(markdown);
+  const next = keptUrls(hits);
+  return previous.length === next.length && previous.every((url, index) => url === next[index]);
+}
+
 export function substantiveFingerprint(markdown) {
   const vulnerable = markdown.match(/\| vulnerable range \| ([^|\n]+) \|/);
   const fixed = markdown.match(/\| fixed range \| ([^|\n]+) \|/);
@@ -305,11 +352,12 @@ async function searchPackage(entry) {
         continue;
       }
       const batch = runGhSearch(query, repo);
-      hits.push(...batch);
+      hits.push(...batch.filter(hit => keepHit(hit, entry.package, repo)));
       await sleep(2500);
     }
   }
-  return rankHits(dedupe(hits).filter(hit => keepHit(hit, entry.package)));
+  const kept = rankHits(dedupe(hits));
+  return { filtered: kept.length, hits: kept.slice(0, MAX_HITS) };
 }
 
 async function main() {
@@ -319,7 +367,9 @@ async function main() {
   const skipped = [];
 
   for (const entry of WATCHLIST) {
-    const hits = await searchPackage(entry);
+    const searched = await searchPackage(entry);
+    const hits = searched.hits;
+    console.log(`HITS ${entry.key} filtered=${searched.filtered} kept=${hits.length}`);
     const outPath = path.join(OUT_DIR, `${day}-${entry.key}.md`);
     if (hits.length === 0) {
       if (!dryRun) {
@@ -339,31 +389,19 @@ async function main() {
 
     const rangePairs = chooseRange(hits);
     const body = renderCandidate(entry, hits, rangePairs);
-    const nextFingerprint = substantiveFingerprint(body);
     const existing = await draftsFor(entry.key);
-    const older = existing.filter(file => file !== outPath);
-    const previous = older.at(-1);
-    if (previous) {
-      const previousBody = await readFile(previous, "utf8");
-      if (substantiveFingerprint(previousBody) === nextFingerprint) {
-        skipped.push({ package: entry.package, previous: path.relative(ROOT, previous) });
-        console.log(`skip ${entry.package}: identical to ${path.relative(ROOT, previous)}`);
-        if (!dryRun && existing.includes(outPath)) {
-          await unlink(outPath);
-          removed.push(outPath);
-          console.log(`removed redundant ${path.relative(ROOT, outPath)}`);
-        }
-        continue;
+    let unchanged = null;
+    for (const file of existing) {
+      const previousBody = await readFile(file, "utf8");
+      if (sameUrlSet(previousBody, hits)) {
+        unchanged = file;
+        break;
       }
     }
-
-    if (!dryRun && existing.includes(outPath)) {
-      const current = await readFile(outPath, "utf8");
-      if (substantiveFingerprint(current) === nextFingerprint) {
-        skipped.push({ package: entry.package, previous: path.relative(ROOT, outPath) });
-        console.log(`skip ${entry.package}: identical to ${path.relative(ROOT, outPath)}`);
-        continue;
-      }
+    if (unchanged) {
+      skipped.push({ package: entry.package, previous: path.relative(ROOT, unchanged) });
+      console.log(`skip ${entry.package}: URL set unchanged vs ${path.relative(ROOT, unchanged)}`);
+      continue;
     }
 
     if (!dryRun) {
@@ -383,7 +421,7 @@ async function main() {
   console.log(
     dryRun
       ? "dry-run complete"
-      : `miner v1 complete (wrote ${written.length}, removed ${removed.length}, skipped ${skipped.length})`
+      : `miner v1.1 complete (wrote ${written.length}, removed ${removed.length}, skipped ${skipped.length})`
   );
 }
 
@@ -392,22 +430,65 @@ function assert(condition, message) {
 }
 
 function runSelfCheck() {
+  const own = "software-mansion/react-native-reanimated";
   assert(
-    keepHit({ title: "react-native-reanimated 3.5.4 crash", body: "" }, "react-native-reanimated"),
-    "version + package should stay"
+    keepHit({ title: "Crash in 3.5.4", body: "" }, "react-native-reanimated", own),
+    "own-repo title version should stay"
   );
   assert(
-    keepHit({ title: "workaround for react-native-screens", body: "no semver here" }, "react-native-screens"),
-    "phrase + package should stay"
+    keepHit(
+      { title: "Request: backport DecorView fix to 4.23.x (pins ~4.23.0)", body: "" },
+      "react-native-screens",
+      "software-mansion/react-native-screens"
+    ),
+    "backport title should stay"
   );
   assert(
-    !keepHit({ title: "fixed in 1.2.3", body: "unrelated repo" }, "react-native-reanimated"),
-    "missing package name should drop"
+    keepHit(
+      { title: "Pin react-native-screens to 4.23.0", url: "https://github.com/software-mansion/react-native-screens/pull/9", body: "" },
+      "react-native-screens",
+      "software-mansion/react-native-screens"
+    ),
+    "pin pull request should stay"
   );
   assert(
-    !keepHit({ title: "react-native-pager-view layout", body: "no version and no phrase" }, "react-native-pager-view"),
-    "package alone should drop"
+    !keepHit({ title: "workaround for react-native-screens", body: "no semver here" }, "react-native-screens", "software-mansion/react-native-screens"),
+    "workaround-only own-repo title should drop"
   );
+  assert(
+    !keepHit({ title: "layout bug", body: "fails on 4.23.0" }, "react-native-screens", "software-mansion/react-native-screens"),
+    "version only in the body should drop for own repo"
+  );
+  assert(
+    !keepHit(
+      { title: "feat: new blur API 1.2.3", url: "https://github.com/software-mansion/react-native-screens/pull/12", body: "" },
+      "react-native-screens",
+      "software-mansion/react-native-screens"
+    ),
+    "feature pull request should drop"
+  );
+  assert(
+    keepHit(
+      { title: "react-native-reanimated 3.5.4 crash", body: "fixed in 3.6.0" },
+      "react-native-reanimated",
+      EXPO_REPO
+    ),
+    "expo title with package and version should stay"
+  );
+  assert(
+    !keepHit(
+      { title: "fixed in 3.6.0", body: "react-native-reanimated is mentioned only here" },
+      "react-native-reanimated",
+      EXPO_REPO
+    ),
+    "expo hit with package only in the body should drop"
+  );
+  assert(
+    !keepHit({ title: "react-native-pager-view layout", body: "no version and no phrase" }, "react-native-pager-view", EXPO_REPO),
+    "expo package title without version or phrase should drop"
+  );
+  assert(sameUrlSet("## Evidence URLs\n\n- https://github.com/a/b/issues/1\n", [{ url: "https://github.com/a/b/issues/1" }]), "same url set");
+  assert(!sameUrlSet("## Evidence URLs\n\n- https://github.com/a/b/issues/1\n", [{ url: "https://github.com/a/b/issues/2" }]), "different url set");
   const pair = extractRangePair(
     "This is vulnerable >=4.0.0 <4.1.2 on SDK 54. It is fixed in >=4.1.2."
   );

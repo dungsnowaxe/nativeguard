@@ -411,7 +411,8 @@ Usage:
   --sdk <major|soft>
       Filter rules to this Expo SDK major. Wins over expo package vs app.json / app.config.js sdkVersion.
       Garbage values exit 1 with INVALID_SDK. Conflicting project SDK signals exit 1 with SDK_MISMATCH.
-      An app.config.js that throws or exports a function exits 1 with APP_CONFIG_JS.
+      An app.config.js that throws or exports a function exits 1 with APP_CONFIG_JS only when --sdk is not set.
+      With --sdk, that file is skipped and analysis uses the override.
 `);
 }
 
@@ -446,6 +447,7 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
 
   console.log("");
   printRecommendationsTable(report.recommendations);
+  printRecommendationConflicts(report.recommendationConflicts);
 
   console.log("");
   console.log("Next actions:");
@@ -456,6 +458,25 @@ function printReport(report: Awaited<ReturnType<typeof analyzeProject>>, wroteLo
   if (wroteLockfile) {
     console.log("");
     console.log("Wrote nativeguard-lock.json");
+  }
+}
+
+function printRecommendationConflicts(
+  conflicts: Array<{
+    packageName: string;
+    winner: { ruleId?: string; action: string; to?: string };
+    lost: Array<{ ruleId?: string; action: string; to?: string }>;
+  }> | undefined
+): void {
+  if (!conflicts || conflicts.length === 0) return;
+  console.log("");
+  console.log("Recommendation conflicts (one winner kept; exit 1):");
+  for (const conflict of conflicts) {
+    const winner = `${conflict.winner.ruleId ?? "rule"} ${conflict.winner.action}${conflict.winner.to ? ` -> ${conflict.winner.to}` : ""}`;
+    const lost = conflict.lost
+      .map(choice => `${choice.ruleId ?? "rule"} ${choice.action}${choice.to ? ` -> ${choice.to}` : ""}`)
+      .join(", ");
+    console.log(`${conflict.packageName}: kept ${winner}; dropped ${lost}`);
   }
 }
 

@@ -32,12 +32,14 @@ import {
   type ProjectProfile,
   type Recommendation,
   type RecommendationAction,
+  type RecommendationConflict,
   type RecommendationSurface,
   type RecommendedAction,
   type SnapshotComparison,
   type StabilityStatus,
   type ToolchainContext,
   type VerificationType,
+  validateCompatibilityRule,
   validateLockfile,
   validateNativeGuardSnapshot,
   validateNativeGuardConfig
@@ -104,7 +106,9 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   const now = options.now ?? new Date();
   const packageJson = await readPackageJson(root);
   const config = await loadNativeGuardConfig(root, options.configPath);
-  const profile = await detectProjectProfile(root, packageJson);
+  const profile = await detectProjectProfile(root, packageJson, {
+    ignoreAppConfigJsErrors: options.sdk !== undefined
+  });
   const dependencySnapshot = await createDependencySnapshot(root, packageJson);
   const expoSdkMajor = resolveExpoSdkMajor(options.sdk, dependencySnapshot, profile);
   const resolvedExpo = dependencySnapshot.resolvedVersions?.expo ?? profile.expoVersion;
@@ -154,8 +158,9 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
     };
   }
 
+  const rules = await loadProjectRules(root);
   const rawFindings = [
-    ...evaluateRules(loadBundledRules(), analyzedProfile, dependencySnapshot),
+    ...evaluateRules(rules, analyzedProfile, dependencySnapshot),
     ...createResolutionFindings(dependencySnapshot, analyzedProfile.packageManager)
   ];
   const exceptionState = evaluateExceptions(config.exceptions, dependencySnapshot, dependencyGraph, now);
@@ -165,10 +170,12 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
   );
   const staleExceptionFindings = createStaleExceptionFindings(exceptionState.stale, dependencySnapshot, dependencyGraph);
   const allFindings = [...findings, ...staleExceptionFindings];
-  const summary = summarizeFindings(allFindings);
-  const packageIssues = allFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
-  const exitDecision = evaluatePolicyExit(allFindings, exceptionState.stale, config, Boolean(options.ci), summary.status);
-  const recommendations = createRecommendations(allFindings, analyzedProfile);
+  const recommendationResult = createRecommendations(allFindings, analyzedProfile);
+  const conflictFindings = recommendationResult.conflicts.map(createRecommendationConflictFinding);
+  const reportedFindings = [...allFindings, ...conflictFindings];
+  const summary = summarizeFindings(reportedFindings);
+  const packageIssues = reportedFindings.flatMap(finding => (finding.issue ? [finding.issue] : []));
+  const exitDecision = evaluatePolicyExit(reportedFindings, exceptionState.stale, config, Boolean(options.ci), summary.status);
 
   return {
     schemaVersion: DOCTOR_REPORT_SCHEMA_VERSION,
@@ -185,9 +192,12 @@ export async function analyzeProject(options: AnalyzeOptions): Promise<DoctorRep
       exitDecision
     },
     packageIssues,
-    findings: allFindings,
-    recommendations,
-    nextActions: createNextActions(summary.status, analyzedProfile, allFindings),
+    findings: reportedFindings,
+    recommendations: recommendationResult.recommendations,
+    ...(recommendationResult.conflicts.length > 0
+      ? { recommendationConflicts: recommendationResult.conflicts }
+      : {}),
+    nextActions: createNextActions(summary.status, analyzedProfile, reportedFindings),
     acceptedExceptions
   };
 }
@@ -201,7 +211,7 @@ export async function explainPackage(options: ExplainPackageOptions): Promise<Pa
     ...report.dependencySnapshot.devDependencies
   };
   const findings = report.findings.filter(finding => finding.packageName === packageName);
-  const matchingRules = loadBundledRules().filter(rule => {
+  const matchingRules = (await loadProjectRules(path.resolve(options.rootDir))).filter(rule => {
     if (rule.packageName !== packageName) return false;
     if (!ruleMatchesProfile(rule, report.project)) return false;
     const version = queryVersion ?? allDependencies[packageName] ?? nodes[0]?.installedVersion;
@@ -449,7 +459,11 @@ export async function readNativeGuardLockfile(rootDir: string): Promise<NativeGu
   }
 }
 
-export async function detectProjectProfile(root: string, packageJson: PackageJson): Promise<ProjectProfile> {
+export async function detectProjectProfile(
+  root: string,
+  packageJson: PackageJson,
+  detection?: { ignoreAppConfigJsErrors?: boolean }
+): Promise<ProjectProfile> {
   const dependencies = {
     ...packageJson.dependencies,
     ...packageJson.devDependencies
@@ -461,7 +475,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   const packageManager = await detectPackageManager(root);
   const lockfileState = await detectLockfileState(root, packageManager);
   const appConfig = await readExpoAppConfig(root);
-  const expoSdkVersions = await readExpoSdkVersions(root);
+  const expoSdkVersions = await readExpoSdkVersions(root, detection?.ignoreAppConfigJsErrors === true);
   const workspace = await detectWorkspace(root, packageJson);
   const expoModulesPackages = Object.keys(dependencies)
     .filter(name => name === "expo-modules-core" || name.startsWith("expo-"))
@@ -956,14 +970,14 @@ async function readLockfile(root: string, packageManager: PackageManagerName): P
   }
 }
 
-async function readExpoSdkVersions(root: string): Promise<string[]> {
+async function readExpoSdkVersions(root: string, ignoreAppConfigJsErrors: boolean): Promise<string[]> {
   const versions: string[] = [];
   for (const file of ["app.json", "app.config.json"] as const) {
     const parsed = await readJsonFile<{ expo?: { sdkVersion?: unknown } }>(path.join(root, file));
     const sdkVersion = readSdkVersionValue(parsed?.expo?.sdkVersion);
     if (sdkVersion) versions.push(sdkVersion);
   }
-  const fromJs = await readAppConfigJsSdkVersion(root);
+  const fromJs = await readAppConfigJsSdkVersion(root, ignoreAppConfigJsErrors);
   if (fromJs) versions.push(fromJs);
   return versions;
 }
@@ -979,10 +993,11 @@ function readSdkVersionValue(sdkVersion: unknown): string | undefined {
 
 /**
  * Evaluate app.config.js far enough to read expo.sdkVersion.
- * Functions, throws, and env-dependent configs fail closed (APP_CONFIG_JS).
- * --sdk still wins later in resolveExpoSdkMajor when evaluation succeeds.
+ * Functions, throws, and env-dependent configs fail closed (APP_CONFIG_JS)
+ * only when the file is needed to discover the SDK.
+ * When --sdk is set, those failures are skipped and the override is used.
  */
-async function readAppConfigJsSdkVersion(root: string): Promise<string | undefined> {
+async function readAppConfigJsSdkVersion(root: string, ignoreErrors: boolean): Promise<string | undefined> {
   const filePath = path.join(root, "app.config.js");
   const source = await readTextIfExists(filePath);
   if (source === undefined) return undefined;
@@ -991,6 +1006,7 @@ async function readAppConfigJsSdkVersion(root: string): Promise<string | undefin
   try {
     exported = evaluateAppConfigJs(filePath, source);
   } catch (error) {
+    if (ignoreErrors) return undefined;
     if (error instanceof NativeGuardError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new NativeGuardError(
@@ -1000,6 +1016,7 @@ async function readAppConfigJsSdkVersion(root: string): Promise<string | undefin
   }
 
   if (typeof exported === "function") {
+    if (ignoreErrors) return undefined;
     throw new NativeGuardError(
       "app.config.js exported a function. NativeGuard will not call it, because Expo config functions can depend on app context or environment. NativeGuard did not guess an SDK and did not treat this project as stable.",
       "APP_CONFIG_JS"
@@ -1007,6 +1024,7 @@ async function readAppConfigJsSdkVersion(root: string): Promise<string | undefin
   }
 
   if (exported instanceof Promise) {
+    if (ignoreErrors) return undefined;
     throw new NativeGuardError(
       "app.config.js exported a promise. NativeGuard will not wait on async config. NativeGuard did not guess an SDK and did not treat this project as stable.",
       "APP_CONFIG_JS"
@@ -1014,6 +1032,7 @@ async function readAppConfigJsSdkVersion(root: string): Promise<string | undefin
   }
 
   if (!exported || typeof exported !== "object") {
+    if (ignoreErrors) return undefined;
     throw new NativeGuardError(
       "app.config.js did not export an object. NativeGuard did not guess an SDK and did not treat this project as stable.",
       "APP_CONFIG_JS"
@@ -1027,6 +1046,7 @@ async function readAppConfigJsSdkVersion(root: string): Promise<string | undefin
   if (sdkVersion) return sdkVersion;
 
   if (/\bprocess\.env\b/.test(source)) {
+    if (ignoreErrors) return undefined;
     throw new NativeGuardError(
       "app.config.js reads process.env but did not produce a string expo.sdkVersion. NativeGuard did not guess an SDK and did not treat this project as stable.",
       "APP_CONFIG_JS"
@@ -1725,6 +1745,34 @@ function redactProjectProfile(profile: ProjectProfile): ProjectProfile {
   };
 }
 
+async function loadProjectRules(root: string): Promise<CompatibilityRule[]> {
+  const bundled = loadBundledRules();
+  const raw = await readTextIfExists(path.join(root, "nativeguard.rules.json"));
+  if (raw === undefined) return bundled;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new NativeGuardError("nativeguard.rules.json is not valid JSON.", "INVALID_RULES");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new NativeGuardError("nativeguard.rules.json must be an array of compatibility rules.", "INVALID_RULES");
+  }
+  const extra: CompatibilityRule[] = [];
+  for (const rule of parsed) {
+    const result = validateCompatibilityRule(rule);
+    if (!result.valid) {
+      const id = rule && typeof rule === "object" && "id" in rule ? String((rule as { id?: unknown }).id) : "rule";
+      throw new NativeGuardError(
+        `nativeguard.rules.json ${id} is invalid: ${result.errors.join(", ")}`,
+        "INVALID_RULES"
+      );
+    }
+    extra.push(rule as CompatibilityRule);
+  }
+  return [...bundled, ...extra];
+}
+
 function evaluateRules(
   rules: CompatibilityRule[],
   profile: ProjectProfile,
@@ -2073,15 +2121,25 @@ function createNextActions(status: StabilityStatus, profile: ProjectProfile, fin
   }
 }
 
-function createRecommendations(findings: Finding[], profile: ProjectProfile): Recommendation[] {
+const RECOMMENDATION_ACTION_RANK: Record<RecommendationAction, number> = {
+  bump: 0,
+  pin: 1,
+  exclude: 2,
+  leave: 3
+};
+
+function createRecommendations(
+  findings: Finding[],
+  profile: ProjectProfile
+): { recommendations: Recommendation[]; conflicts: RecommendationConflict[] } {
   const fallbackSurfaces = surfacesForProject(profile.kind);
-  const recommendations: Recommendation[] = [];
+  const flat: Recommendation[] = [];
 
   for (const finding of findings) {
     for (const remediation of finding.remediation) {
       if (!isRecommendationAction(remediation.type)) continue;
       const surfaces = remediation.surfaces ?? finding.surfaces ?? fallbackSurfaces;
-      recommendations.push({
+      flat.push({
         action: remediation.type,
         packageName: remediation.packageName ?? finding.packageName ?? finding.ruleId ?? finding.id,
         evidence: finding.evidence,
@@ -2094,7 +2152,128 @@ function createRecommendations(findings: Finding[], profile: ProjectProfile): Re
     }
   }
 
-  return recommendations;
+  const byPackage = new Map<string, Recommendation[]>();
+  for (const recommendation of flat) {
+    const group = byPackage.get(recommendation.packageName) ?? [];
+    group.push(recommendation);
+    byPackage.set(recommendation.packageName, group);
+  }
+
+  const recommendations: Recommendation[] = [];
+  const conflicts: RecommendationConflict[] = [];
+  for (const [packageName, group] of byPackage) {
+    const resolved = resolvePackageRecommendations(packageName, group);
+    recommendations.push(...resolved.recommendations);
+    if (resolved.conflict) conflicts.push(resolved.conflict);
+  }
+
+  return { recommendations, conflicts };
+}
+
+function resolvePackageRecommendations(
+  packageName: string,
+  group: Recommendation[]
+): { recommendations: Recommendation[]; conflict?: RecommendationConflict } {
+  const byRule = new Map<string, Recommendation[]>();
+  for (const recommendation of group) {
+    const ruleId = recommendation.ruleId ?? "";
+    const side = byRule.get(ruleId) ?? [];
+    side.push(recommendation);
+    byRule.set(ruleId, side);
+  }
+
+  if (byRule.size < 2) {
+    return { recommendations: group };
+  }
+
+  const sides = [...byRule.entries()];
+  const signatures = new Set(sides.map(([, side]) => recommendationSignature(side)));
+  if (signatures.size < 2) {
+    return { recommendations: dedupeRecommendations(group) };
+  }
+
+  const ranked = [...sides].sort((left, right) => compareRecommendationSides(left, right));
+  const winner = ranked[0];
+  if (!winner) return { recommendations: group };
+  const [, winnerRecommendations] = winner;
+  const primary = [...winnerRecommendations].sort(
+    (left, right) => RECOMMENDATION_ACTION_RANK[left.action] - RECOMMENDATION_ACTION_RANK[right.action]
+  )[0];
+  if (!primary) return { recommendations: group };
+
+  return {
+    recommendations: winnerRecommendations,
+    conflict: {
+      packageName,
+      winner: recommendationChoice(primary),
+      lost: ranked.slice(1).flatMap(([, side]) => side.map(recommendationChoice))
+    }
+  };
+}
+
+function compareRecommendationSides(
+  left: [string, Recommendation[]],
+  right: [string, Recommendation[]]
+): number {
+  const rankDiff = recommendationSideRank(left[1]) - recommendationSideRank(right[1]);
+  if (rankDiff !== 0) return rankDiff;
+  return left[0].localeCompare(right[0]);
+}
+
+function recommendationSideRank(recommendations: Recommendation[]): number {
+  return Math.min(...recommendations.map(recommendation => RECOMMENDATION_ACTION_RANK[recommendation.action]));
+}
+
+function recommendationSignature(recommendations: Recommendation[]): string {
+  return recommendations
+    .map(recommendation => `${recommendation.action}|${recommendation.to ?? ""}`)
+    .sort()
+    .join("\n");
+}
+
+function dedupeRecommendations(recommendations: Recommendation[]): Recommendation[] {
+  const seen = new Set<string>();
+  const deduped: Recommendation[] = [];
+  for (const recommendation of recommendations) {
+    const key = `${recommendation.action}|${recommendation.to ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(recommendation);
+  }
+  return deduped;
+}
+
+function recommendationChoice(recommendation: Recommendation): RecommendationConflict["winner"] {
+  return {
+    ...(recommendation.ruleId ? { ruleId: recommendation.ruleId } : {}),
+    action: recommendation.action,
+    ...(recommendation.to ? { to: recommendation.to } : {})
+  };
+}
+
+function createRecommendationConflictFinding(conflict: RecommendationConflict): Finding {
+  const winnerLabel = `${conflict.winner.ruleId ?? "rule"} ${conflict.winner.action}${conflict.winner.to ? ` ${conflict.winner.to}` : ""}`;
+  const lostLabel = conflict.lost
+    .map(choice => `${choice.ruleId ?? "rule"} ${choice.action}${choice.to ? ` ${choice.to}` : ""}`)
+    .join(", ");
+  return {
+    id: `finding-recommendation-conflict-${conflict.packageName}`,
+    ...(conflict.winner.ruleId ? { ruleId: conflict.winner.ruleId } : {}),
+    packageName: conflict.packageName,
+    severity: "error",
+    status: "risky",
+    title: `Conflicting recommendations for ${conflict.packageName}`,
+    detail: `Rules disagreed on ${conflict.packageName}. Kept ${winnerLabel}. Dropped ${lostLabel}. NativeGuard will not exit 0 while this conflict is unresolved.`,
+    confidence: "high",
+    evidence: [],
+    remediation: [
+      {
+        type: "manual-check",
+        packageName: conflict.packageName,
+        note: "Pick one remediation. NativeGuard kept a single deterministic winner and did not emit the other actions."
+      }
+    ]
+  };
 }
 
 function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {

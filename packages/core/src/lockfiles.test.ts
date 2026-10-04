@@ -7,6 +7,30 @@ import { parseBunLock, parseNpmLockfile, parsePnpmLock, parseYarnLock } from "./
 
 const fixturesRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../fixtures");
 
+test("parses nested npm lockfile packages that are not direct dependencies", () => {
+  const parsed = parseNpmLockfile(JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      "": { dependencies: { expo: "53.0.20" } },
+      "node_modules/expo": { version: "53.0.20" },
+      "node_modules/some-parent/node_modules/react-native-pager-view": { version: "6.6.0" }
+    }
+  }));
+  assert.equal(parsed.resolvedVersions["react-native-pager-view"], "6.6.0");
+  assert.equal(parsed.resolvedVersions.expo, "53.0.20");
+});
+
+test("keeps a direct npm resolution ahead of a nested copy", () => {
+  const parsed = parseNpmLockfile(JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      "node_modules/react-native-pager-view": { version: "6.7.1" },
+      "node_modules/some-parent/node_modules/react-native-pager-view": { version: "6.6.0" }
+    }
+  }));
+  assert.equal(parsed.resolvedVersions["react-native-pager-view"], "6.7.1");
+});
+
 test("parses npm lockfile resolved versions", async () => {
   const raw = await readFile(path.join(fixturesRoot, "lock-npm-range-miss-pager-view/package-lock.json"), "utf8");
   const parsed = parseNpmLockfile(raw);

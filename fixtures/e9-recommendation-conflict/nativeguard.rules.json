@@ -1,0 +1,73 @@
+[
+  {
+    "schemaVersion": "1.1.0",
+    "id": "a-e9-pin-gesture-handler",
+    "packageName": "react-native-gesture-handler",
+    "vulnerable": "2.14.0",
+    "context": {
+      "projectKinds": [
+        "expo-managed",
+        "expo-prebuild",
+        "expo-go",
+        "expo-dev-client"
+      ],
+      "expoSdk": [
+        "54"
+      ]
+    },
+    "outcome": "risky",
+    "confidence": "high",
+    "summary": "Fixture rule that pins gesture-handler. Loses to the bump rule.",
+    "evidence": [
+      {
+        "type": "manual",
+        "summary": "Fixture-only disagreement with the bump rule.",
+        "confidence": "high"
+      }
+    ],
+    "remediation": [
+      {
+        "type": "pin",
+        "packageName": "react-native-gesture-handler",
+        "to": "2.14.1",
+        "note": "Pin gesture-handler to 2.14.1."
+      }
+    ]
+  },
+  {
+    "schemaVersion": "1.1.0",
+    "id": "e9-bump-gesture-handler",
+    "packageName": "react-native-gesture-handler",
+    "vulnerable": "<2.16.0",
+    "fixed": ">=2.16.0",
+    "context": {
+      "projectKinds": [
+        "expo-managed",
+        "expo-prebuild",
+        "expo-go",
+        "expo-dev-client"
+      ],
+      "expoSdk": [
+        "54"
+      ]
+    },
+    "outcome": "risky",
+    "confidence": "high",
+    "summary": "Fixture rule that bumps gesture-handler. Wins over the pin rule.",
+    "evidence": [
+      {
+        "type": "manual",
+        "summary": "Fixture-only disagreement with the pin rule.",
+        "confidence": "high"
+      }
+    ],
+    "remediation": [
+      {
+        "type": "bump",
+        "packageName": "react-native-gesture-handler",
+        "to": "2.16.0",
+        "note": "Bump gesture-handler to 2.16.0."
+      }
+    ]
+  }
+]

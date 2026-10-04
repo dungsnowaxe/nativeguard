@@ -370,9 +370,88 @@ test("NG-E3: a normal semver still matches advisory ranges", async () => {
   assert.ok(parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
 });
 
+test("NG-E7: --sdk wins when app.config.js throws", async () => {
+  const fixturePath = path.join(fixturesRoot, "e7-config-js-throws");
+  const output = await captureStdout(() => main(["doctor", "--json", "--sdk", "54", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson & { error?: { code?: string } };
+  assert.equal(output.exitCode, 0);
+  assert.equal(parsed.error, undefined);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.project.expoSdkMajor, "54");
+  assert.equal(parsed.summary.status, "stable");
+});
+
+test("NG-E9: disagreeing rules keep one recommendation and exit 1", async () => {
+  const fixturePath = path.join(fixturesRoot, "e9-recommendation-conflict");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson;
+  const recommendations = parsed.recommendations as Array<{
+    action?: string;
+    packageName?: string;
+    to?: string;
+    ruleId?: string;
+  }>;
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.summary.status, "risky");
+  const gesture = recommendations.filter(item => item.packageName === "react-native-gesture-handler");
+  assert.equal(gesture.length, 1);
+  assert.equal(gesture[0]?.action, "bump");
+  assert.equal(gesture[0]?.to, "2.16.0");
+  assert.equal(gesture[0]?.ruleId, "e9-bump-gesture-handler");
+  assert.equal(parsed.recommendationConflicts?.length, 1);
+  const conflict = parsed.recommendationConflicts?.[0];
+  assert.equal(conflict?.packageName, "react-native-gesture-handler");
+  assert.equal(conflict?.winner.ruleId, "e9-bump-gesture-handler");
+  assert.equal(conflict?.winner.action, "bump");
+  assert.deepEqual(conflict?.lost, [
+    { ruleId: "a-e9-pin-gesture-handler", action: "pin", to: "2.14.1" }
+  ]);
+  assert.ok(parsed.findings?.some(finding => finding.id === "finding-recommendation-conflict-react-native-gesture-handler"));
+  assert.equal(
+    parsed.findings?.find(finding => finding.id === "finding-recommendation-conflict-react-native-gesture-handler")?.status,
+    "risky"
+  );
+});
+
+test("NG-E10: a vulnerable transitive lockfile version is risky", async () => {
+  const fixturePath = path.join(fixturesRoot, "e10-transitive-pager-view");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson & {
+    dependencySnapshot?: { dependencies?: Record<string, string>; resolvedVersions?: Record<string, string> };
+  };
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.summary.status, "risky");
+  assert.equal(parsed.dependencySnapshot?.dependencies?.["react-native-pager-view"], undefined);
+  assert.equal(parsed.dependencySnapshot?.resolvedVersions?.["react-native-pager-view"], "6.6.0");
+  assert.ok(parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+});
+
+test("NG-E10: a missing lockfile resolution is not invented", async () => {
+  const fixturePath = path.join(fixturesRoot, "e10-transitive-absent");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson & {
+    dependencySnapshot?: { resolvedVersions?: Record<string, string> };
+  };
+  assert.equal(output.exitCode, 0);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.summary.status, "stable");
+  assert.equal(parsed.dependencySnapshot?.resolvedVersions?.["react-native-pager-view"], undefined);
+  assert.equal(
+    parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+    false
+  );
+});
+
 interface DoctorJson extends AnalysisJson {
   project: AnalysisJson["project"] & { expoSdkMajor?: string; expoSdkVersions?: string[] };
-  findings?: Array<{ ruleId?: string }>;
+  findings?: Array<{ ruleId?: string; id?: string; status?: string }>;
+  recommendationConflicts?: Array<{
+    packageName: string;
+    winner: { ruleId?: string; action: string; to?: string };
+    lost: Array<{ ruleId?: string; action: string; to?: string }>;
+  }>;
 }
 
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {

@@ -208,6 +208,24 @@ export interface Recommendation {
   ruleId?: string;
 }
 
+/** One side of a same-package recommendation disagreement. */
+export interface RecommendationChoice {
+  ruleId?: string;
+  action: RecommendationAction;
+  to?: string;
+}
+
+/**
+ * Two or more rules disagreed on the same package.
+ * `winner` is the single action kept in `recommendations`.
+ * `lost` lists the rules and actions that were not emitted.
+ */
+export interface RecommendationConflict {
+  packageName: string;
+  winner: RecommendationChoice;
+  lost: RecommendationChoice[];
+}
+
 export interface CompatibilityIssueMetadata {
   reason: string;
   /** Display / remediation target version or range string (not the advisory fixed range). */
@@ -502,6 +520,11 @@ export interface DoctorReport {
   packageIssues: PackageIssue[];
   findings: Finding[];
   recommendations: Recommendation[];
+  /**
+   * Present when two rules disagree on the same package.
+   * Omitted when there is no disagreement. An unresolved conflict is never a stable exit.
+   */
+  recommendationConflicts?: RecommendationConflict[];
   nextActions: string[];
   acceptedExceptions?: AcceptedException[];
 }
@@ -673,12 +696,47 @@ export function validateDoctorReport(value: unknown): ValidationResult {
       validateRecommendation(recommendation, index, errors);
     });
   }
+  if (value.recommendationConflicts !== undefined) {
+    validateRecommendationConflicts(value.recommendationConflicts, errors);
+  }
   if (!Array.isArray(value.nextActions)) errors.push("nextActions must be an array");
   if (value.acceptedExceptions !== undefined) {
     validateAcceptedExceptionEntries(value.acceptedExceptions, errors, "acceptedExceptions");
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+function validateRecommendationConflicts(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("recommendationConflicts must be an array");
+    return;
+  }
+  value.forEach((conflict, index) => {
+    if (!isRecord(conflict)) {
+      errors.push(`recommendationConflicts[${index}] must be an object`);
+      return;
+    }
+    requireString(conflict, "packageName", errors, `recommendationConflicts[${index}].packageName`);
+    validateRecommendationChoice(conflict.winner, `recommendationConflicts[${index}].winner`, errors);
+    if (!Array.isArray(conflict.lost) || conflict.lost.length === 0) {
+      errors.push(`recommendationConflicts[${index}].lost must be a non-empty array`);
+    } else {
+      conflict.lost.forEach((choice, choiceIndex) => {
+        validateRecommendationChoice(choice, `recommendationConflicts[${index}].lost[${choiceIndex}]`, errors);
+      });
+    }
+  });
+}
+
+function validateRecommendationChoice(value: unknown, label: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  if (!isRecommendationAction(value.action)) {
+    errors.push(`${label}.action must be one of ${RECOMMENDATION_ACTIONS.join("|")}`);
+  }
 }
 
 export function validateRecommendation(

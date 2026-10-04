@@ -32,12 +32,16 @@ export function parseNpmLockfile(raw: string, importerKey = "."): InstallLockfil
     const localPrefix = importerKey === "." ? "" : `${importerKey}/`;
     const localMatch = key.match(new RegExp(`^${escapeRegExp(localPrefix)}node_modules/(@[^/]+/[^/]+|[^/]+)$`));
     const rootMatch = key.match(/^node_modules\/(@[^/]+\/[^/]+|[^/]+)$/);
-    const packageName = localMatch?.[1] ?? (importerKey === "." ? rootMatch?.[1] : undefined);
+    const nestedMatch = key.match(/(?:^|\/)node_modules\/(@[^/]+\/[^/]+|[^/]+)$/);
+    const directName = localMatch?.[1] ?? (importerKey === "." ? rootMatch?.[1] : undefined);
+    const packageName = directName ?? nestedMatch?.[1];
     if (!packageName) continue;
     entries.push({
       packageName,
       version: value.version,
-      importerKey: localMatch ? importerKey : "."
+      // Direct installs keep the importer key so they win over a nested copy.
+      // Nested-only packages are still resolved; they are not invented when absent.
+      ...(directName ? { importerKey } : {})
     });
   }
 

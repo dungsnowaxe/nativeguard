@@ -355,7 +355,7 @@ export const bundledRules: CompatibilityRule[] = [
         url: "https://github.com/software-mansion/react-native-screens/issues/4311",
         summary:
           "Android DecorView null crash on screens 4.23.0 and 4.24.0. Fix landed in 4.25.0. SDK 55 should patch-package the null-guard (decorView optional, topInset 0) instead of bumping.",
-        confidence: "high"
+        confidence: "medium"
       }
     ],
     remediation: [

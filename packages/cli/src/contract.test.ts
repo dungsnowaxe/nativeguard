@@ -262,6 +262,114 @@ test("NG-E6: screens pin is risky on managed and not on dev-client or prebuild",
   }
 });
 
+test("NG-E7: app.config.js sdkVersion is used when the expo package has no major", async () => {
+  const fixturePath = path.join(fixturesRoot, "e7-config-js-sdk");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson;
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.project.expoSdkMajor, "53");
+  assert.deepEqual(parsed.project.expoSdkVersions, ["53.0.0"]);
+  assert.ok(parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.equal(parsed.summary.status, "risky");
+
+  const override = await captureStdout(() => main(["doctor", "--json", "--sdk", "54", fixturePath]));
+  const overridden = parseCapturedJson(override.stdout) as DoctorJson;
+  assert.equal(override.exitCode, 0);
+  assertAnalysisJsonContract(overridden, path.resolve(fixturePath));
+  assert.equal(overridden.project.expoSdkMajor, "54");
+  assert.equal(
+    overridden.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+    false
+  );
+  assert.equal(overridden.summary.status, "stable");
+});
+
+test("NG-E7: app.config.js that throws fails closed", async () => {
+  const fixturePath = path.join(fixturesRoot, "e7-config-js-throws");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as {
+    error?: { code?: string; message?: string };
+    summary?: unknown;
+  };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.error?.code, "APP_CONFIG_JS");
+  assert.match(parsed.error?.message ?? "", /EXPO_TOKEN/);
+  assert.equal(parsed.summary, undefined);
+});
+
+test("NG-E7: app.config.js function is not called", async () => {
+  const fixturePath = path.join(fixturesRoot, "e7-config-js-function");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as {
+    error?: { code?: string; message?: string };
+    summary?: unknown;
+  };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.error?.code, "APP_CONFIG_JS");
+  assert.match(parsed.error?.message ?? "", /function/i);
+  assert.equal(parsed.summary, undefined);
+});
+
+test("NG-E7: app.config.js sdkVersion disagreeing with the expo package is SDK_MISMATCH", async () => {
+  const fixturePath = path.join(fixturesRoot, "e7-config-js-mismatch");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as {
+    error?: { code?: string; message?: string };
+    summary?: unknown;
+  };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.error?.code, "SDK_MISMATCH");
+  assert.match(parsed.error?.message ?? "", /54/);
+  assert.match(parsed.error?.message ?? "", /53/);
+  assert.equal(parsed.summary, undefined);
+
+  const override = await captureStdout(() => main(["doctor", "--json", "--sdk", "54", fixturePath]));
+  const overridden = parseCapturedJson(override.stdout) as DoctorJson;
+  assert.equal(override.exitCode, 0);
+  assertAnalysisJsonContract(overridden, path.resolve(fixturePath));
+  assert.equal(overridden.project.expoSdkMajor, "54");
+  assert.equal(overridden.summary.status, "stable");
+});
+
+test("NG-E3: git URL is unsupported even when the lockfile resolved a semver", async () => {
+  const fixturePath = path.join(fixturesRoot, "e3-git-url");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson & {
+    dependencySnapshot?: {
+      resolvedVersions?: Record<string, string>;
+      unresolvedSpecifiers?: Record<string, string>;
+    };
+  };
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.summary.status, "unsupported");
+  assert.equal(parsed.dependencySnapshot?.resolvedVersions?.["expo-haptics"], "14.0.1");
+  assert.equal(
+    parsed.dependencySnapshot?.unresolvedSpecifiers?.["expo-haptics"],
+    "github:expo/expo#sdk-54"
+  );
+  const finding = (parsed.findings as Array<{ id?: string; detail?: string; status?: string }> | undefined)?.find(
+    item => item.id === "finding-unresolved-versions"
+  );
+  assert.ok(finding);
+  assert.equal(finding?.status, "unsupported");
+  assert.match(finding?.detail ?? "", /github:expo\/expo#sdk-54/);
+});
+
+test("NG-E3: a normal semver still matches advisory ranges", async () => {
+  const fixturePath = path.join(fixturesRoot, "e3-semver-advisory");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson & {
+    dependencySnapshot?: { unresolvedSpecifiers?: Record<string, string> };
+  };
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.summary.status, "risky");
+  assert.equal(parsed.dependencySnapshot?.unresolvedSpecifiers, undefined);
+  assert.ok(parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+});
+
 interface DoctorJson extends AnalysisJson {
   project: AnalysisJson["project"] & { expoSdkMajor?: string; expoSdkVersions?: string[] };
   findings?: Array<{ ruleId?: string }>;

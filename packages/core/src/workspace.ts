@@ -145,14 +145,83 @@ export function resolveDeclaredSpecifiers(
     }
   }
 
+  // A lockfile semver must not hide a non-semver declaration (git URL, file:,
+  // workspace:*, link:, tag). catalog: is only unresolved when it did not
+  // resolve to a semver (leftover). A non-semver lockfile version is recorded
+  // when the declaration itself is a semver range.
+  for (const [packageName, specifier] of Object.entries(declared)) {
+    if (isNonSemverDependencySpecifier(specifier)) {
+      unresolvedSpecifiers[packageName] = specifier;
+      continue;
+    }
+    const resolved = resolvedVersions[packageName];
+    if (resolved && isNonSemverDependencySpecifier(resolved)) {
+      unresolvedSpecifiers[packageName] = resolved;
+    }
+  }
+
   return { resolvedVersions, unresolvedSpecifiers };
 }
 
 export function needsExplicitResolution(specifier: string): boolean {
   const trimmed = specifier.trim();
-  return /^(catalog|workspace|patch|link|file|portal|exec|git|github|http|https|ssh|bitbucket|gitlab):/.test(
-    trimmed
-  );
+  return isProtocolSpecifier(trimmed) || trimmed.startsWith("catalog:");
+}
+
+const SEMVER_TOKEN =
+  /^v?\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * True for concrete semver and ranges (`1.2.3`, `~54.0.0-beta.1`, `>=4 <5`, `*`).
+ * False for git URLs, protocols, dist-tags, and other non-semver specifiers.
+ */
+export function isSemverSpecifier(specifier: string): boolean {
+  const trimmed = specifier.trim();
+  if (!trimmed) return false;
+  if (trimmed === "*" || trimmed === "x" || trimmed === "X") return true;
+  if (isProtocolSpecifier(trimmed) || trimmed.startsWith("catalog:")) return false;
+  const orParts = trimmed.split("||").map(part => part.trim()).filter(Boolean);
+  if (orParts.length === 0) return false;
+  return orParts.every(isSemverRangePart);
+}
+
+/**
+ * Declared or locked versions that must not be treated as stable.
+ * `catalog:` is excluded here so a catalog that resolved to semver stays usable;
+ * an unresolved catalog is still recorded by needsExplicitResolution.
+ */
+export function isNonSemverDependencySpecifier(specifier: string): boolean {
+  const trimmed = specifier.trim();
+  if (!trimmed || trimmed.startsWith("catalog:")) return false;
+  if (isProtocolSpecifier(trimmed)) return true;
+  return !isSemverSpecifier(trimmed);
+}
+
+function isProtocolSpecifier(specifier: string): boolean {
+  const trimmed = specifier.trim();
+  if (trimmed.startsWith("git+") || trimmed.startsWith("git@") || trimmed.includes("://")) return true;
+  return /^(workspace|patch|link|file|portal|exec|git|github|http|https|ssh|bitbucket|gitlab):/.test(trimmed);
+}
+
+function isSemverRangePart(part: string): boolean {
+  const hyphen = part.match(/^(.+?)\s+-\s+(.+)$/);
+  if (hyphen) {
+    return isSemverToken(hyphen[1] ?? "") && isSemverToken(hyphen[2] ?? "");
+  }
+  const tokens = part.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  return tokens.every(token => {
+    const comparator = token.match(/^(<=|>=|<|>|=|\^|~)?(.*)$/);
+    const body = comparator?.[2] ?? "";
+    if (!body) return false;
+    if (body === "*" || body === "x" || body === "X") return true;
+    if (/^\d+(?:\.\d+)?\.[xX]$/.test(body) || /^\d+\.[xX]$/.test(body)) return true;
+    return isSemverToken(body);
+  });
+}
+
+function isSemverToken(value: string): boolean {
+  return SEMVER_TOKEN.test(value.trim());
 }
 
 export function isConcreteVersion(specifier: string): boolean {

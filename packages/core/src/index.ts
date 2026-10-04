@@ -1,6 +1,8 @@
 import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import path from "node:path";
+import vm from "node:vm";
 import { loadBundledRules, RULES_PACKAGE } from "@nativeguard/rules";
 import {
   CONFIG_SCHEMA_VERSION,
@@ -958,15 +960,129 @@ async function readExpoSdkVersions(root: string): Promise<string[]> {
   const versions: string[] = [];
   for (const file of ["app.json", "app.config.json"] as const) {
     const parsed = await readJsonFile<{ expo?: { sdkVersion?: unknown } }>(path.join(root, file));
-    const sdkVersion = parsed?.expo?.sdkVersion;
-    if (typeof sdkVersion === "string") {
-      const trimmed = sdkVersion.trim();
-      if (trimmed) versions.push(trimmed);
-    } else if (sdkVersion !== undefined && sdkVersion !== null) {
-      versions.push(String(sdkVersion));
-    }
+    const sdkVersion = readSdkVersionValue(parsed?.expo?.sdkVersion);
+    if (sdkVersion) versions.push(sdkVersion);
   }
+  const fromJs = await readAppConfigJsSdkVersion(root);
+  if (fromJs) versions.push(fromJs);
   return versions;
+}
+
+function readSdkVersionValue(sdkVersion: unknown): string | undefined {
+  if (typeof sdkVersion === "string") {
+    const trimmed = sdkVersion.trim();
+    return trimmed || undefined;
+  }
+  if (sdkVersion !== undefined && sdkVersion !== null) return String(sdkVersion);
+  return undefined;
+}
+
+/**
+ * Evaluate app.config.js far enough to read expo.sdkVersion.
+ * Functions, throws, and env-dependent configs fail closed (APP_CONFIG_JS).
+ * --sdk still wins later in resolveExpoSdkMajor when evaluation succeeds.
+ */
+async function readAppConfigJsSdkVersion(root: string): Promise<string | undefined> {
+  const filePath = path.join(root, "app.config.js");
+  const source = await readTextIfExists(filePath);
+  if (source === undefined) return undefined;
+
+  let exported: unknown;
+  try {
+    exported = evaluateAppConfigJs(filePath, source);
+  } catch (error) {
+    if (error instanceof NativeGuardError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new NativeGuardError(
+      `app.config.js failed to evaluate (${message}). NativeGuard did not guess an SDK and did not treat this project as stable.`,
+      "APP_CONFIG_JS"
+    );
+  }
+
+  if (typeof exported === "function") {
+    throw new NativeGuardError(
+      "app.config.js exported a function. NativeGuard will not call it, because Expo config functions can depend on app context or environment. NativeGuard did not guess an SDK and did not treat this project as stable.",
+      "APP_CONFIG_JS"
+    );
+  }
+
+  if (exported instanceof Promise) {
+    throw new NativeGuardError(
+      "app.config.js exported a promise. NativeGuard will not wait on async config. NativeGuard did not guess an SDK and did not treat this project as stable.",
+      "APP_CONFIG_JS"
+    );
+  }
+
+  if (!exported || typeof exported !== "object") {
+    throw new NativeGuardError(
+      "app.config.js did not export an object. NativeGuard did not guess an SDK and did not treat this project as stable.",
+      "APP_CONFIG_JS"
+    );
+  }
+
+  const record = exported as { expo?: { sdkVersion?: unknown } };
+  const sdkVersion = record.expo && typeof record.expo === "object"
+    ? readSdkVersionValue(record.expo.sdkVersion)
+    : undefined;
+  if (sdkVersion) return sdkVersion;
+
+  if (/\bprocess\.env\b/.test(source)) {
+    throw new NativeGuardError(
+      "app.config.js reads process.env but did not produce a string expo.sdkVersion. NativeGuard did not guess an SDK and did not treat this project as stable.",
+      "APP_CONFIG_JS"
+    );
+  }
+
+  return undefined;
+}
+
+function evaluateAppConfigJs(filePath: string, source: string): unknown {
+  if (/\bimport\s/.test(source)) {
+    throw new NativeGuardError(
+      "app.config.js uses import statements. NativeGuard only evaluates module.exports or export default objects and did not guess an SDK.",
+      "APP_CONFIG_JS"
+    );
+  }
+  const adapted = adaptEsmDefaultExport(source);
+  const moduleRecord: { exports: unknown } = { exports: {} };
+  const localRequire = createRequire(filePath);
+  const sandbox = vm.createContext({
+    module: moduleRecord,
+    exports: moduleRecord.exports,
+    require: localRequire,
+    __filename: filePath,
+    __dirname: path.dirname(filePath),
+    process,
+    console,
+    Buffer,
+    URL,
+    TextDecoder,
+    TextEncoder
+  });
+  vm.runInContext(`"use strict";\n${adapted}\n`, sandbox, { filename: filePath });
+  return unwrapDefaultExport(moduleRecord.exports);
+}
+
+function adaptEsmDefaultExport(source: string): string {
+  if (!/\bexport\s+default\b/.test(source)) return source;
+  if (/\bexport\s+(?!default\b)/.test(source)) {
+    throw new NativeGuardError(
+      "app.config.js uses export forms other than export default. NativeGuard did not guess an SDK and did not treat this project as stable.",
+      "APP_CONFIG_JS"
+    );
+  }
+  return source.replace(/\bexport\s+default\b/, "module.exports =");
+}
+
+function unwrapDefaultExport(exported: unknown): unknown {
+  if (!exported || typeof exported !== "object") return exported;
+  const record = exported as { default?: unknown; __esModule?: boolean };
+  if (!("default" in record)) return exported;
+  const keys = Object.keys(record);
+  if (record.__esModule || keys.every(key => key === "default" || key === "__esModule")) {
+    return record.default;
+  }
+  return exported;
 }
 
 async function readExpoAppConfig(root: string): Promise<{ newArchEnabled?: boolean } | undefined> {
@@ -2112,7 +2228,7 @@ function createResolutionFindings(snapshot: DependencySnapshot, packageManager: 
       severity: "warning",
       status: "unsupported",
       title: "Some dependency versions could not be resolved",
-      detail: `NativeGuard could not resolve installed versions for: ${listed}. This result is unsupported, not stable.`,
+      detail: `NativeGuard will not treat these specifiers as a resolved semver: ${listed}. Non-semver versions (git URL, file:, workspace:, link:, dist-tag, or an unresolved catalog:) are unsupported, not stable.`,
       confidence: "high",
       evidence: [],
       remediation: [

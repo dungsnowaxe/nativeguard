@@ -341,7 +341,7 @@ export const bundledRules: CompatibilityRule[] = [
       expoSdk: ["55"]
     },
     outcome: "risky",
-    confidence: "high",
+    confidence: "medium",
     summary:
       "Expo SDK 55 react-native-screens 4.23.x-4.24.x crashes on Android when DecorView is null. Do not bump to 4.25.0; patch instead. 4.23.1 was not released.",
     issue: {

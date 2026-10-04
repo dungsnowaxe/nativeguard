@@ -251,7 +251,7 @@ test("freezes recommendation action, evidence, and surfaces", () => {
   });
 
   assert.equal(result.valid, true);
-  assert.deepEqual(RECOMMENDATION_ACTIONS, ["bump", "pin", "leave", "exclude"]);
+  assert.deepEqual(RECOMMENDATION_ACTIONS, ["bump", "pin", "leave", "exclude", "patched"]);
   assert.deepEqual(RECOMMENDATION_SURFACES, ["eas", "local-native", "runtime"]);
 });
 
@@ -270,7 +270,7 @@ test("rejects recommendation actions and surfaces outside the frozen contract", 
   });
 
   assert.equal(invalidAction.valid, false);
-  assert.ok(invalidAction.errors.some(error => error.includes("bump|pin|leave|exclude")));
+  assert.ok(invalidAction.errors.some(error => error.includes("bump|pin|leave|exclude|patched")));
   assert.equal(invalidSurface.valid, false);
   assert.ok(invalidSurface.errors.some(error => error.includes("eas|local-native|runtime")));
 });

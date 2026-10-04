@@ -517,6 +517,7 @@ function formatRecommendationAction(action: RecommendationAction): string {
     case "pin":
     case "leave":
     case "exclude":
+    case "patched":
       return action;
     default: {
       const exhaustive: never = action;

@@ -126,6 +126,18 @@ const curatedFixtures = [
     ]
   },
   {
+    dir: "sdk55-screens-decorview",
+    ruleId: "screens-decorview-android-sdk55",
+    evidenceUrls: ["https://github.com/software-mansion/react-native-screens/issues/4311"],
+    recommendations: [
+      {
+        action: "patched",
+        packageName: "react-native-screens",
+        surfaces: ["eas", "local-native", "runtime"]
+      }
+    ]
+  },
+  {
     dir: "sdk54-nativewind-rngh",
     ruleId: "nativewind-min-4.2.1-with-rngh-sdk54",
     evidenceUrls: [

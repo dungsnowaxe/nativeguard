@@ -2127,7 +2127,8 @@ const RECOMMENDATION_ACTION_RANK: Record<RecommendationAction, number> = {
   bump: 0,
   pin: 1,
   exclude: 2,
-  leave: 3
+  leave: 3,
+  patched: 4
 };
 
 interface RuleAdvisory {
@@ -2443,6 +2444,7 @@ function isAcceptableExceptionAction(action: RecommendationAction): boolean {
     case "exclude":
       return true;
     case "bump":
+    case "patched":
       return false;
     default: {
       const exhaustive: never = action;

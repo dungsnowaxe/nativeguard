@@ -11,7 +11,7 @@ export type PackageManagerName = "npm" | "yarn" | "pnpm" | "bun" | "unknown";
 export type FindingSeverity = "info" | "warning" | "error";
 export const STABILITY_STATUSES = ["stable", "accepted-exception", "risky", "unsupported"] as const;
 export type StabilityStatus = (typeof STABILITY_STATUSES)[number];
-export const RECOMMENDATION_ACTIONS = ["bump", "pin", "leave", "exclude"] as const;
+export const RECOMMENDATION_ACTIONS = ["bump", "pin", "leave", "exclude", "patched"] as const;
 export type RecommendationAction = (typeof RECOMMENDATION_ACTIONS)[number];
 export const RECOMMENDATION_SURFACES = ["eas", "local-native", "runtime"] as const;
 export type RecommendationSurface = (typeof RECOMMENDATION_SURFACES)[number];
@@ -220,7 +220,7 @@ export interface RecommendationChoice {
  * `winner` is the single action kept in `recommendations`.
  * A bump whose target is inside another rule's vulnerable range, and not inside
  * that rule's fixed range, loses to pin or leave. Otherwise the winner is
- * deterministic (bump, then pin, then exclude, then leave, then rule id).
+ * deterministic (bump, then pin, then exclude, then leave, then patched, then rule id).
  * `lost` lists the rules and actions that were not emitted.
  * An unresolved clash is never exit 0.
  */

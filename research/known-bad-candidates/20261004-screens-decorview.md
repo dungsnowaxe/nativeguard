@@ -2,6 +2,7 @@
 
 > Unconfirmed. Not merged into `@nativeguard/rules`. Human gate only.
 > Do not treat this as a pack rule until someone confirms the ranges.
+> Promoted to rule `screens-decorview-android-sdk55`. Ranges in this note are unchanged. 4.23.1 not released (tag 404).
 
 | Field | Value |
 | --- | --- |

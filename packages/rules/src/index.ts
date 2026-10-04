@@ -326,6 +326,49 @@ export const bundledRules: CompatibilityRule[] = [
   },
   {
     schemaVersion: RULE_SCHEMA_VERSION,
+    id: "screens-decorview-android-sdk55",
+    packageName: "react-native-screens",
+    vulnerable: ">=4.23.0 <4.25.0",
+    fixed: ">=4.25.0",
+    patched: {
+      workaround: "patch-package",
+      note: "Do not bump to 4.25.0 on Expo SDK 55; the bundled pin is ~4.23.0. patch-package a null-guard (decorView optional, topInset 0 when null) from react-native-screens#4311. 4.23.1 not released (tag 404). No patchFile is shipped."
+    },
+    context: {
+      // SDK 55 only, so the SDK 54 ~4.16 pin still wins on SDK 54 and this rule does not fire on SDK 56.
+      // Android DecorView crash. The analyzer cannot see the platform, so any SDK 55 install in range still fires.
+      projectKinds: [...EXPO_KINDS],
+      expoSdk: ["55"]
+    },
+    outcome: "risky",
+    confidence: "high",
+    summary:
+      "Expo SDK 55 react-native-screens 4.23.x-4.24.x crashes on Android when DecorView is null. Do not bump to 4.25.0; patch instead. 4.23.1 was not released.",
+    issue: {
+      reason:
+        "Screen.onLayout throws if decorView is null on screens 4.23.0 and 4.24.0. 4.25.0 removes that path, but Expo SDK 55 pins ~4.23.0, so bumping is a false fix. 4.23.1 not released (tag 404).",
+      fixedVersion: ">=4.25.0"
+    },
+    evidence: [
+      {
+        type: "github_issue",
+        url: "https://github.com/software-mansion/react-native-screens/issues/4311",
+        summary:
+          "Android DecorView null crash on screens 4.23.0 and 4.24.0. Fix landed in 4.25.0. SDK 55 should patch-package the null-guard (decorView optional, topInset 0) instead of bumping.",
+        confidence: "high"
+      }
+    ],
+    remediation: [
+      {
+        type: "patched",
+        packageName: "react-native-screens",
+        note: "Do not bump to 4.25.0 on Expo SDK 55 (bundled pin ~4.23.0 is a false fix). Apply a patch-package null-guard: use decorView optional and topInset 0 when null (react-native-screens#4311). 4.23.1 not released (tag 404)."
+      }
+    ],
+    surfaces: ["eas", "local-native", "runtime"]
+  },
+  {
+    schemaVersion: RULE_SCHEMA_VERSION,
     id: "nativewind-min-4.2.1-with-rngh-sdk54",
     packageName: "nativewind",
     vulnerable: "<4.2.1",

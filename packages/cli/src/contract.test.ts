@@ -482,6 +482,54 @@ test("NG-E10: a missing lockfile resolution is not invented", async () => {
   );
 });
 
+test("screens DecorView SDK 55 is patched, not a bump, and does not fire on 4.25.0 or SDK 56", async () => {
+  const vulnerablePath = path.join(fixturesRoot, "sdk55-screens-decorview");
+  const vulnerable = await captureStdout(() => main(["doctor", "--json", vulnerablePath]));
+  const vulnerableReport = parseCapturedJson(vulnerable.stdout) as DoctorJson;
+  assert.equal(vulnerable.exitCode, 1);
+  assertAnalysisJsonContract(vulnerableReport, path.resolve(vulnerablePath));
+  assert.equal(vulnerableReport.summary.status, "risky");
+  assert.equal(vulnerableReport.project.expoSdkMajor, "55");
+  const screens = (vulnerableReport.recommendations as Array<{
+    action?: string;
+    packageName?: string;
+    ruleId?: string;
+    to?: string;
+  }>).filter(item => item.packageName === "react-native-screens");
+  assert.equal(screens.length, 1);
+  assert.equal(screens[0]?.action, "patched");
+  assert.equal(screens[0]?.ruleId, "screens-decorview-android-sdk55");
+  assert.equal(screens.some(item => item.action === "bump"), false);
+  assert.equal(vulnerableReport.recommendationConflicts, undefined);
+
+  const fixedPath = path.join(fixturesRoot, "sdk55-screens-decorview-fixed");
+  const fixed = await captureStdout(() => main(["doctor", "--json", fixedPath]));
+  const fixedReport = parseCapturedJson(fixed.stdout) as DoctorJson;
+  assert.equal(fixed.exitCode, 0);
+  assertAnalysisJsonContract(fixedReport, path.resolve(fixedPath));
+  assert.equal(fixedReport.summary.status, "stable");
+  assert.equal(
+    fixedReport.findings?.some(finding => finding.ruleId === "screens-decorview-android-sdk55"),
+    false
+  );
+
+  const sdk56Path = path.join(fixturesRoot, "sdk56-screens-decorview");
+  const sdk56 = await captureStdout(() => main(["doctor", "--json", sdk56Path]));
+  const sdk56Report = parseCapturedJson(sdk56.stdout) as DoctorJson;
+  assert.equal(sdk56.exitCode, 0);
+  assertAnalysisJsonContract(sdk56Report, path.resolve(sdk56Path));
+  assert.equal(sdk56Report.project.expoSdkMajor, "56");
+  assert.equal(sdk56Report.summary.status, "stable");
+  assert.equal(
+    sdk56Report.findings?.some(finding => finding.ruleId === "screens-decorview-android-sdk55"),
+    false
+  );
+  assert.equal(
+    sdk56Report.findings?.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"),
+    false
+  );
+});
+
 interface DoctorJson extends AnalysisJson {
   project: AnalysisJson["project"] & { expoSdkMajor?: string; expoSdkVersions?: string[] };
   findings?: Array<{ ruleId?: string; id?: string; status?: string; detail?: string }>;

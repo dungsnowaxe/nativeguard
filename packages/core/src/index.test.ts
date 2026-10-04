@@ -1209,6 +1209,96 @@ test("emits unsupported for bun.lockb without a text bun.lock", async () => {
   assert.notEqual(report.summary.status, "stable");
 });
 
+test("NG-E6: expo-dev-client devDependency without native dirs is expo-dev-client", async () => {
+  const root = await fixture({
+    packageJson: {
+      private: true,
+      dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+      devDependencies: { "expo-dev-client": "5.0.0" }
+    },
+    lockfile: "npm"
+  });
+  const profile = await detectProjectProfile(root, {
+    dependencies: { expo: "54.0.0", "react-native": "0.81.0" },
+    devDependencies: { "expo-dev-client": "5.0.0" }
+  });
+  assert.equal(profile.kind, "expo-dev-client");
+});
+
+test("NG-E6: native directories win over expo-dev-client", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "expo-dev-client": "5.0.0"
+    },
+    directories: ["android"],
+    lockfile: "npm"
+  });
+  const profile = await detectProjectProfile(root, {
+    dependencies: {
+      expo: "54.0.0",
+      "react-native": "0.81.0",
+      "expo-dev-client": "5.0.0"
+    }
+  });
+  assert.equal(profile.kind, "expo-prebuild");
+});
+
+test("NG-E5: unparsable sdkVersion is INVALID_SDK and not stable", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.33", "react-native": "0.81.5" },
+    lockfile: "npm",
+    files: {
+      "app.json": JSON.stringify({ expo: { sdkVersion: "54xyz" } })
+    }
+  });
+  await assert.rejects(
+    () => analyzeProject({ rootDir: root, cliVersion: "0.0.0" }),
+    (error: unknown) => {
+      assert.equal(error instanceof NativeGuardError, true);
+      assert.equal((error as NativeGuardError).code, "INVALID_SDK");
+      return true;
+    }
+  );
+});
+
+test("NG-E5: --sdk overrides an unparsable sdkVersion", async () => {
+  const root = await fixture({
+    dependencies: { expo: "54.0.33", "react-native": "0.81.5" },
+    lockfile: "npm",
+    resolvedVersions: { expo: "54.0.33", "react-native": "0.81.5" },
+    files: {
+      "app.json": JSON.stringify({ expo: { sdkVersion: "54xyz" } })
+    }
+  });
+  const report = await analyzeProject({ rootDir: root, cliVersion: "0.0.0", sdk: "54" });
+  assert.equal(report.project.expoSdkMajor, "54");
+  assert.equal(report.summary.status, "stable");
+});
+
+test("NG-E6: a general known-bad still fires on expo-dev-client", async () => {
+  const root = await fixture({
+    dependencies: {
+      expo: "54.0.33",
+      "react-native": "0.81.5",
+      "expo-dev-client": "5.0.0",
+      "sentry-expo": "7.0.0"
+    },
+    lockfile: "npm",
+    resolvedVersions: {
+      expo: "54.0.33",
+      "react-native": "0.81.5",
+      "expo-dev-client": "5.0.0",
+      "sentry-expo": "7.0.0"
+    }
+  });
+  const report = await analyzeProject({ rootDir: root, cliVersion: "0.0.0" });
+  assert.equal(report.project.kind, "expo-dev-client");
+  assert.equal(report.findings.some(finding => finding.ruleId === "ban-sentry-expo-on-sdk-ge-50"), true);
+  assert.equal(report.summary.status, "risky");
+});
+
 async function fixture(options: {
   dependencies?: Record<string, string>;
   packageJson?: Record<string, unknown>;

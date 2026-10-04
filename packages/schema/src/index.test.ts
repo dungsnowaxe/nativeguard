@@ -203,7 +203,7 @@ test("requires schemaVersion, recommendations[], summary.status, project.kind, a
   assert.ok(result.errors.some(error => error.includes("summary.status")));
   assert.ok(result.errors.some(error => error.includes("project.kind")));
   assert.ok(result.errors.some(error => error.includes("project.root")));
-  assert.deepEqual(PROJECT_KINDS, ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"]);
+  assert.deepEqual(PROJECT_KINDS, ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go", "expo-dev-client"]);
   assert.deepEqual(STABILITY_STATUSES, ["stable", "accepted-exception", "risky", "unsupported"]);
 });
 

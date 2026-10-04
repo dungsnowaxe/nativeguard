@@ -47,7 +47,7 @@ nativeguard doctor --write-snapshot
 | Flag | Meaning |
 | --- | --- |
 | `--json` | Machine-readable report. When analysis runs, always includes `schemaVersion`, `recommendations[]`, `summary.status`, `project.kind`, and `project.root`. Frozen recommendation `action` is `bump \| pin \| leave \| exclude`, plus `evidence` and `surfaces`. |
-| `--sdk <major\|soft>` | Filter rules to that Expo SDK major (`--sdk 54`, `--sdk=54`, `--sdk 54beta`, `--sdk 54.0.0-beta.1`). If omitted, NativeGuard parses Expo major from the lockfile-resolved `expo` version, else the declared `expo` range, including unambiguous prerelease/canary forms. Digit-prefixed garbage (`54xyz`) exits `1` with `INVALID_SDK`. |
+| `--sdk <major\|soft>` | Filter rules to that Expo SDK major (`--sdk 54`, `--sdk=54`, `--sdk 54beta`, `--sdk 54.0.0-beta.1`). This flag wins over project signals. If omitted, NativeGuard derives the major from the lockfile-resolved `expo` version, else the declared `expo` range, else static `expo.sdkVersion` in `app.json` / `app.config.json` (not `app.config.js`). A parsable package major and sdkVersion that disagree, or disagreeing config files, exit `1` with `SDK_MISMATCH` and are not stable. Digit-prefixed garbage (`54xyz`), including a garbage `sdkVersion`, exits `1` with `INVALID_SDK`. |
 | `--write-snapshot` | Write `nativeguard-lock.json` (alias: `--write-lockfile`). NativeGuard snapshot only — never npm/Yarn/pnpm/Bun lockfiles. Preserves `acceptedExceptions`. |
 
 Bare React Native is detected and reported as `summary.status: "unsupported"` with **exit `1`**, not stable and not an error payload. Compatibility rules are skipped.
@@ -82,7 +82,7 @@ When analysis runs, the process exit code follows `summary.status`:
 | `1` | `risky` | Unaccepted findings remain, including every `bump`. |
 | `1` | `unsupported` | Analysis ran but did not produce a supported result. Includes **bare React Native** (rules skipped), unresolved `catalog:` / lockfile gaps, missing install lockfile, and binary `bun.lockb` without text `bun.lock`. Never silent `stable`. |
 
-When analysis does not run, doctor still exits **`1`**. `--json` emits `{ schemaVersion, error: { code, message } }` instead of a report. Codes today include `INVALID_SDK` (garbage `--sdk` such as `54xyz`), `MISSING_PACKAGE_JSON`, `UNSUPPORTED_PROJECT` (no `expo` or `react-native` in `package.json`), `INVALID_LOCKFILE`, `UNSUPPORTED_LOCKFILE_SCHEMA`, `INVALID_ARGS`, and `INVALID_REPORT`.
+When analysis does not run, doctor still exits **`1`**. `--json` emits `{ schemaVersion, error: { code, message } }` instead of a report. Codes today include `INVALID_SDK` (garbage `--sdk` such as `54xyz`, or an unparsable `sdkVersion`), `SDK_MISMATCH` (expo package major disagrees with `app.json` / `app.config.json` `sdkVersion`, or those files disagree with each other), `MISSING_PACKAGE_JSON`, `UNSUPPORTED_PROJECT` (no `expo` or `react-native` in `package.json`), `INVALID_LOCKFILE`, `UNSUPPORTED_LOCKFILE_SCHEMA`, `INVALID_ARGS`, and `INVALID_REPORT`.
 
 Bare React Native is `summary.status: "unsupported"` and **exit `1`**, not an error payload.
 
@@ -127,7 +127,7 @@ When analysis runs (including `unsupported` reports such as bare React Native), 
 | `schemaVersion` | Report schema version (`"1.0.0"`). |
 | `recommendations` | Array of recommendation objects. Empty when there are none (clean or unsupported bare RN). |
 | `summary.status` | `stable` \| `accepted-exception` \| `risky` \| `unsupported`. |
-| `project.kind` | `expo-managed` \| `expo-prebuild` \| `expo-go` \| `bare-react-native`. Expo without native directories is `expo-managed`. |
+| `project.kind` | `expo-managed` \| `expo-prebuild` \| `expo-go` \| `expo-dev-client` \| `bare-react-native`. `ios/` or `android/` plus `expo` is `expo-prebuild` (wins over a dev client). Otherwise `expo-dev-client` in dependencies or devDependencies is `expo-dev-client`. Expo without native directories and without that package is `expo-managed` (managed / Expo Go surface; `expo-go` remains a rule kind). |
 | `project.root` | Absolute path of the analyzed project. |
 
 The same object also includes `generatedAt`, `nativeguard`, `dependencySnapshot`, `findings`, `packageIssues`, `nextActions`, and `acceptedExceptions` (copied from `nativeguard-lock.json` when present).

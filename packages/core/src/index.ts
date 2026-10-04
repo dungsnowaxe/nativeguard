@@ -459,6 +459,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
   const packageManager = await detectPackageManager(root);
   const lockfileState = await detectLockfileState(root, packageManager);
   const appConfig = await readExpoAppConfig(root);
+  const expoSdkVersions = await readExpoSdkVersions(root);
   const workspace = await detectWorkspace(root, packageJson);
   const expoModulesPackages = Object.keys(dependencies)
     .filter(name => name === "expo-modules-core" || name.startsWith("expo-"))
@@ -471,6 +472,7 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
     packageManager,
     ...(await detectPackageManagerVersion(root, packageManager, packageJson)),
     ...(expoVersion ? { expoVersion } : {}),
+    ...(expoSdkVersions.length > 0 ? { expoSdkVersions } : {}),
     ...(reactNativeVersion ? { reactNativeVersion } : {}),
     hasIosProject,
     hasAndroidProject,
@@ -485,6 +487,9 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
     detectionConfidence: "high" as const
   };
 
+  const hasDevClient = Boolean(dependencies["expo-dev-client"]);
+
+  // Native directories win: a dev-client checkout with ios/ or android/ is prebuild, not Go.
   if (expoVersion && (hasIosProject || hasAndroidProject)) {
     return {
       ...baseProfile,
@@ -496,6 +501,14 @@ export async function detectProjectProfile(root: string, packageJson: PackageJso
     return {
       ...baseProfile,
       kind: "bare-react-native",
+    };
+  }
+
+  // Custom client without committed native projects. Go/managed rules must not fire.
+  if (expoVersion && hasDevClient) {
+    return {
+      ...baseProfile,
+      kind: "expo-dev-client",
     };
   }
 
@@ -939,6 +952,21 @@ async function readLockfile(root: string, packageManager: PackageManagerName): P
     }
     throw error;
   }
+}
+
+async function readExpoSdkVersions(root: string): Promise<string[]> {
+  const versions: string[] = [];
+  for (const file of ["app.json", "app.config.json"] as const) {
+    const parsed = await readJsonFile<{ expo?: { sdkVersion?: unknown } }>(path.join(root, file));
+    const sdkVersion = parsed?.expo?.sdkVersion;
+    if (typeof sdkVersion === "string") {
+      const trimmed = sdkVersion.trim();
+      if (trimmed) versions.push(trimmed);
+    } else if (sdkVersion !== undefined && sdkVersion !== null) {
+      versions.push(String(sdkVersion));
+    }
+  }
+  return versions;
 }
 
 async function readExpoAppConfig(root: string): Promise<{ newArchEnabled?: boolean } | undefined> {
@@ -1461,7 +1489,7 @@ function duplicateFindings(
     status: "red",
     title: `Duplicate ${packageName} versions introduced`,
     detail: `${packageName} has multiple versions in the head graph: ${duplicate.versions.join(", ")}.`,
-    affectedContext: { projectKinds: ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"] },
+    affectedContext: { projectKinds: ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go", "expo-dev-client"] },
     confidence: "high",
     evidence: [],
     recommendedActions: [
@@ -1708,8 +1736,37 @@ function resolveExpoSdkMajor(
     return parsed;
   }
 
-  const expoVersion = snapshot.resolvedVersions?.expo ?? profile.expoVersion;
-  return expoVersion ? parseExpoSdkMajor(expoVersion) : undefined;
+  const configValues = profile.expoSdkVersions ?? [];
+  const configMajors: string[] = [];
+  for (const value of configValues) {
+    const major = parseExpoSdkMajor(value);
+    if (!major) {
+      throw new NativeGuardError(
+        `Invalid Expo sdkVersion "${value}". Expected a major or unambiguous version such as 54.0.0. Pass --sdk to override.`,
+        "INVALID_SDK"
+      );
+    }
+    configMajors.push(major);
+  }
+  const uniqueConfigMajors = [...new Set(configMajors)];
+  if (uniqueConfigMajors.length > 1) {
+    throw new NativeGuardError(
+      `Expo sdkVersion mismatch across app config (${configValues.join(", ")}). NativeGuard will not treat this project as stable. Pass --sdk to choose a major.`,
+      "SDK_MISMATCH"
+    );
+  }
+  const configMajor = uniqueConfigMajors[0];
+
+  const packageVersion = snapshot.resolvedVersions?.expo ?? profile.expoVersion;
+  const packageMajor = packageVersion ? parseExpoSdkMajor(packageVersion) : undefined;
+  if (packageMajor && configMajor && packageMajor !== configMajor) {
+    throw new NativeGuardError(
+      `Expo SDK major mismatch: expo package "${packageVersion}" is SDK ${packageMajor} but app config sdkVersion is SDK ${configMajor} (${configValues.join(", ")}). NativeGuard will not treat this project as stable. Pass --sdk to choose the major rules should use.`,
+      "SDK_MISMATCH"
+    );
+  }
+
+  return packageMajor ?? configMajor;
 }
 
 function ruleMatchesSdk(rule: CompatibilityRule, sdkMajor: string | undefined): boolean {
@@ -1927,6 +1984,7 @@ function createRecommendations(findings: Finding[], profile: ProjectProfile): Re
 function surfacesForProject(kind: ProjectKind): RecommendationSurface[] {
   switch (kind) {
     case "expo-prebuild":
+    case "expo-dev-client":
       return ["eas", "local-native"];
     case "expo-managed":
     case "expo-go":

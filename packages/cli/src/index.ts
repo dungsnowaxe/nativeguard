@@ -409,7 +409,8 @@ Usage:
   --write-snapshot, --write-lockfile
       Write nativeguard-lock.json (NativeGuard snapshot only).
   --sdk <major|soft>
-      Filter rules to this Expo SDK major. Garbage values exit 1 with INVALID_SDK.
+      Filter rules to this Expo SDK major. Wins over expo package vs app.json sdkVersion.
+      Garbage values exit 1 with INVALID_SDK. Conflicting project SDK signals exit 1 with SDK_MISMATCH.
 `);
 }
 

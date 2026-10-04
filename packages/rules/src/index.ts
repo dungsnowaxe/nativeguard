@@ -11,7 +11,7 @@ export const RULES_PACKAGE = {
 
 const NATIVE_SURFACES = ["eas", "local-native"] as const;
 const MANAGED_SURFACES = ["eas", "runtime"] as const;
-const EXPO_KINDS = ["expo-prebuild", "expo-go", "expo-managed"] as const;
+const EXPO_KINDS = ["expo-prebuild", "expo-go", "expo-managed", "expo-dev-client"] as const;
 
 export const bundledRules: CompatibilityRule[] = [
   {
@@ -289,6 +289,7 @@ export const bundledRules: CompatibilityRule[] = [
       note: "Pin react-native-screens to ~4.16.0 on SDK 54 managed / Expo Go."
     },
     context: {
+      // Go / managed only. expo-dev-client and expo-prebuild are a different surface.
       projectKinds: ["expo-go", "expo-managed"],
       expoSdk: ["54"]
     },

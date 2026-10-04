@@ -5,7 +5,7 @@ export const SNAPSHOT_SCHEMA_VERSION = "1.0.0";
 export const PR_REVIEW_SCHEMA_VERSION = "1.0.0";
 export const RULE_SCHEMA_VERSION = "1.1.0";
 
-export const PROJECT_KINDS = ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go"] as const;
+export const PROJECT_KINDS = ["expo-managed", "expo-prebuild", "bare-react-native", "expo-go", "expo-dev-client"] as const;
 export type ProjectKind = (typeof PROJECT_KINDS)[number];
 export type PackageManagerName = "npm" | "yarn" | "pnpm" | "bun" | "unknown";
 export type FindingSeverity = "info" | "warning" | "error";
@@ -61,6 +61,8 @@ export interface ProjectProfile {
   packageManagerVersion?: string;
   expoVersion?: string;
   expoSdkMajor?: string;
+  /** Static `expo.sdkVersion` strings from app.json, then app.config.json. Omitted when unset. */
+  expoSdkVersions?: string[];
   reactNativeVersion?: string;
   newArchitectureEnabled?: boolean;
   hasIosProject: boolean;

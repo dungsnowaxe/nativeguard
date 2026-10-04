@@ -167,6 +167,106 @@ function assertAnalysisJsonContract(value: unknown, expectedRoot: string): asser
   assert.equal(root, expectedRoot);
 }
 
+test("NG-E5: missing sdkVersion uses the expo package major", async () => {
+  const fixturePath = path.join(fixturesRoot, "e5-sdk-from-package");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson;
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.project.expoSdkMajor, "53");
+  assert.equal(parsed.project.expoSdkVersions, undefined);
+  assert.ok(parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.equal(parsed.summary.status, "risky");
+});
+
+test("NG-E5: missing expo package major uses app.config.json sdkVersion", async () => {
+  const fixturePath = path.join(fixturesRoot, "e5-sdk-from-config");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as DoctorJson;
+  assert.equal(output.exitCode, 1);
+  assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+  assert.equal(parsed.project.expoSdkMajor, "53");
+  assert.deepEqual(parsed.project.expoSdkVersions, ["53.0.0"]);
+  assert.ok(parsed.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.equal(parsed.summary.status, "risky");
+});
+
+test("NG-E5: expo package major vs sdkVersion mismatch is not stable", async () => {
+  const fixturePath = path.join(fixturesRoot, "e5-sdk-mismatch");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as {
+    schemaVersion?: string;
+    error?: { code?: string; message?: string };
+    summary?: { status?: string };
+    project?: unknown;
+  };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.schemaVersion, DOCTOR_REPORT_SCHEMA_VERSION);
+  assert.equal(parsed.error?.code, "SDK_MISMATCH");
+  assert.match(parsed.error?.message ?? "", /54/);
+  assert.match(parsed.error?.message ?? "", /53/);
+  assert.equal(parsed.summary, undefined);
+  assert.equal(parsed.project, undefined);
+});
+
+test("NG-E5: disagreeing app.json and app.config.json sdkVersion is not stable", async () => {
+  const fixturePath = path.join(fixturesRoot, "e5-sdk-config-conflict");
+  const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+  const parsed = parseCapturedJson(output.stdout) as { error?: { code?: string } };
+  assert.equal(output.exitCode, 1);
+  assert.equal(parsed.error?.code, "SDK_MISMATCH");
+});
+
+test("NG-E5: --sdk override wins over a package vs sdkVersion mismatch", async () => {
+  const fixturePath = path.join(fixturesRoot, "e5-sdk-mismatch");
+  const sdk53 = await captureStdout(() => main(["doctor", "--json", "--sdk", "53", fixturePath]));
+  const parsed53 = parseCapturedJson(sdk53.stdout) as DoctorJson;
+  assert.equal(sdk53.exitCode, 1);
+  assertAnalysisJsonContract(parsed53, path.resolve(fixturePath));
+  assert.equal(parsed53.project.expoSdkMajor, "53");
+  assert.ok(parsed53.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"));
+  assert.equal(parsed53.summary.status, "risky");
+
+  const sdk54 = await captureStdout(() => main(["doctor", "--json", "--sdk=54", fixturePath]));
+  const parsed54 = parseCapturedJson(sdk54.stdout) as DoctorJson;
+  assert.equal(sdk54.exitCode, 0);
+  assertAnalysisJsonContract(parsed54, path.resolve(fixturePath));
+  assert.equal(parsed54.project.expoSdkMajor, "54");
+  assert.equal(
+    parsed54.findings?.some(finding => finding.ruleId === "pager-view-min-6.7.1-on-rn-079"),
+    false
+  );
+  assert.equal(parsed54.summary.status, "stable");
+});
+
+test("NG-E6: screens pin is risky on managed and not on dev-client or prebuild", async () => {
+  const cases = [
+    { dir: "e6-screens-managed", kind: "expo-managed", exitCode: 1, status: "risky", fires: true },
+    { dir: "e6-screens-dev-client", kind: "expo-dev-client", exitCode: 0, status: "stable", fires: false },
+    { dir: "e6-screens-prebuild", kind: "expo-prebuild", exitCode: 0, status: "stable", fires: false }
+  ] as const;
+
+  for (const fixture of cases) {
+    const fixturePath = path.join(fixturesRoot, fixture.dir);
+    const output = await captureStdout(() => main(["doctor", "--json", fixturePath]));
+    const parsed = parseCapturedJson(output.stdout) as DoctorJson;
+    assert.equal(output.exitCode, fixture.exitCode, fixture.dir);
+    assertAnalysisJsonContract(parsed, path.resolve(fixturePath));
+    assert.equal(parsed.project.kind, fixture.kind, fixture.dir);
+    assert.equal(parsed.summary.status, fixture.status, fixture.dir);
+    assert.equal(
+      parsed.findings?.some(finding => finding.ruleId === "sdk54-pin-screens-tilde-4.16"),
+      fixture.fires,
+      fixture.dir
+    );
+  }
+});
+
+interface DoctorJson extends AnalysisJson {
+  project: AnalysisJson["project"] & { expoSdkMajor?: string; expoSdkVersions?: string[] };
+  findings?: Array<{ ruleId?: string }>;
+}
+
 async function captureStdout(run: () => Promise<number>): Promise<{ exitCode: number; stdout: string }> {
   const originalWrite = process.stdout.write;
   let stdout = "";
